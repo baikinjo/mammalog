@@ -1,8 +1,8 @@
 import type {
   BabyProfile,
   ChildIngredientState,
-  IngredientCategory,
   IngredientDefinition,
+  IntroductionGroup,
   MealHistoryEntry,
   MealSuggestion,
   WeaningStage,
@@ -16,22 +16,21 @@ const stageRank: Record<WeaningStage, number> = {
   completion: 4,
 };
 
-const categoryOrder: IngredientCategory[] = [
+const introductionOrder: IntroductionGroup[] = [
   "grain",
   "meat",
   "leafy",
   "yellow",
   "fruit",
-  "otherProtein",
 ];
 
-const categoryLabels: Record<IngredientCategory, string> = {
+const introductionLabels: Record<IntroductionGroup, string> = {
   grain: "곡류",
   meat: "고기",
   leafy: "이파리 채소",
   yellow: "노란 채소",
   fruit: "과일",
-  otherProtein: "다른 단백질",
+  other: "다른 식품군",
 };
 
 function daysSince(date: string | null, today: Date): number {
@@ -40,15 +39,15 @@ function daysSince(date: string | null, today: Date): number {
   return Math.max(0, Math.floor(elapsed / 86_400_000));
 }
 
-function passedCategories(
+function passedIntroductionGroups(
   definitions: IngredientDefinition[],
   states: ChildIngredientState[],
-): Set<IngredientCategory> {
+): Set<IntroductionGroup> {
   const stateById = new Map(states.map((state) => [state.ingredientId, state]));
   return new Set(
     definitions
       .filter((ingredient) => stateById.get(ingredient.id)?.status === "passed")
-      .map((ingredient) => ingredient.category),
+      .map((ingredient) => ingredient.introductionGroup),
   );
 }
 
@@ -68,9 +67,9 @@ export function chooseNextIngredient(
   }
 
   const stateById = new Map(states.map((state) => [state.ingredientId, state]));
-  const availableCategories = passedCategories(definitions, states);
-  const nextMissingCategory = categoryOrder.find(
-    (category) => !availableCategories.has(category),
+  const availableGroups = passedIntroductionGroups(definitions, states);
+  const nextMissingGroup = introductionOrder.find(
+    (group) => !availableGroups.has(group),
   );
 
   const recentIds = new Set(
@@ -93,7 +92,7 @@ export function chooseNextIngredient(
     const state = stateById.get(ingredient.id);
     let score = 100 - ingredient.introductionPriority;
 
-    if (ingredient.category === nextMissingCategory) score += 80;
+    if (ingredient.introductionGroup === nextMissingGroup) score += 80;
     if (!recentIds.has(ingredient.id)) score += 12;
     if (state?.status === "rejected") score -= 25;
     score += Math.min(20, daysSince(state?.lastOfferedAt ?? null, today));
@@ -153,7 +152,7 @@ export function createInitialMealSuggestion(
     servingGuide: "한두 숟가락부터",
     textureGuide: "부드럽되 물처럼 묽지 않게",
     ingredients: selected,
-    testLabel: newFood ? `${categoryLabels[newFood.category]} ${testDay}/3일` : null,
+    testLabel: newFood ? `${introductionLabels[newFood.introductionGroup]} ${testDay}/3일` : null,
     reasons: [
       "첫날은 곡류 한 그룹에 집중해 반응을 분명하게 기록해요.",
       "먹는 양보다 숟가락과 새로운 질감에 익숙해지는 경험을 우선해요.",
@@ -161,4 +160,3 @@ export function createInitialMealSuggestion(
     ],
   };
 }
-

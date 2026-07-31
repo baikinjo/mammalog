@@ -8,10 +8,22 @@ export type WeaningStage =
 export type IngredientCategory =
   | "grain"
   | "meat"
+  | "vegetable"
+  | "fruit"
+  | "fish"
+  | "seaweed"
+  | "dairy"
+  | "egg"
+  | "beans"
+  | "nutsOil";
+
+export type IntroductionGroup =
+  | "grain"
+  | "meat"
   | "leafy"
   | "yellow"
   | "fruit"
-  | "otherProtein";
+  | "other";
 
 export type IngredientStatus =
   | "locked"
@@ -37,7 +49,9 @@ export interface IngredientDefinition {
   id: string;
   name: string;
   emoji: string;
+  assetId?: string;
   category: IngredientCategory;
+  introductionGroup: IntroductionGroup;
   minimumStage: WeaningStage;
   introductionPriority: number;
 }
@@ -65,4 +79,3 @@ export interface MealSuggestion {
   testLabel: string | null;
   reasons: string[];
 }
-

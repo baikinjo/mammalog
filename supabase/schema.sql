@@ -42,8 +42,11 @@ create table if not exists public.ingredients (
   household_id uuid references public.households(id) on delete cascade,
   name text not null,
   emoji text not null default '',
+  asset_id text,
   category text not null
-    check (category in ('grain', 'meat', 'leafy', 'yellow', 'fruit', 'otherProtein')),
+    check (category in ('grain', 'meat', 'vegetable', 'fruit', 'fish', 'seaweed', 'dairy', 'egg', 'beans', 'nutsOil')),
+  introduction_group text not null default 'other'
+    check (introduction_group in ('grain', 'meat', 'leafy', 'yellow', 'fruit', 'other')),
   minimum_stage text not null default 'initial'
     check (minimum_stage in ('initial', 'middle', 'late', 'completion')),
   introduction_priority smallint not null default 100,
@@ -262,20 +265,33 @@ create policy "members can manage preparation tasks"
   with check (public.can_access_child(child_id));
 
 insert into public.ingredients
-  (id, name, emoji, category, minimum_stage, introduction_priority)
+  (id, name, emoji, asset_id, category, introduction_group, minimum_stage, introduction_priority)
 values
-  ('rice', '쌀', '🍚', 'grain', 'initial', 1),
-  ('oatmeal', '오트밀', '🌾', 'grain', 'initial', 2),
-  ('beef', '소고기', '🥩', 'meat', 'initial', 3),
-  ('cabbage', '양배추', '🥬', 'leafy', 'initial', 4),
-  ('bokchoy', '청경채', '🌿', 'leafy', 'initial', 5),
-  ('pumpkin', '단호박', '🎃', 'yellow', 'initial', 6),
-  ('zucchini', '애호박', '🥒', 'yellow', 'initial', 7),
-  ('apple', '사과', '🍎', 'fruit', 'initial', 8)
+  ('rice', '쌀', '🍚', 'rice', 'grain', 'grain', 'initial', 1),
+  ('oatmeal', '오트밀', '🌾', 'oatmeal', 'grain', 'grain', 'initial', 2),
+  ('beef', '소고기', '🥩', 'beef', 'meat', 'meat', 'initial', 3),
+  ('cabbage', '양배추', '🥬', 'cabbage', 'vegetable', 'leafy', 'initial', 4),
+  ('bokchoy', '청경채', '🌿', 'bokchoy', 'vegetable', 'leafy', 'initial', 5),
+  ('pumpkin', '단호박', '🎃', 'pumpkin', 'vegetable', 'yellow', 'initial', 6),
+  ('zucchini', '애호박', '🥒', 'zucchini', 'vegetable', 'yellow', 'initial', 7),
+  ('apple', '사과', '🍎', 'apple', 'fruit', 'fruit', 'initial', 8),
+  ('pork', '돼지고기', '', 'pork', 'meat', 'meat', 'initial', 9),
+  ('chicken', '닭고기', '', 'chicken', 'meat', 'meat', 'initial', 10),
+  ('broccoli', '브로콜리', '', 'broccoli', 'vegetable', 'leafy', 'initial', 11),
+  ('carrot', '당근', '', 'carrot', 'vegetable', 'yellow', 'initial', 12),
+  ('sweet-potato', '고구마', '', 'sweet-potato', 'vegetable', 'yellow', 'initial', 13),
+  ('whitefish', '흰살생선', '', 'whitefish', 'fish', 'other', 'initial', 14),
+  ('egg', '완숙 계란', '', 'egg', 'egg', 'other', 'initial', 15),
+  ('tofu', '두부', '', 'tofu', 'beans', 'other', 'initial', 16),
+  ('legumes', '콩류', '', 'legumes', 'beans', 'other', 'initial', 17),
+  ('kelp', '다시마', '', 'kelp', 'seaweed', 'other', 'middle', 18),
+  ('yogurt', '플레인 요구르트', '', 'yogurt', 'dairy', 'other', 'initial', 19),
+  ('peanut-butter', '땅콩버터', '', 'peanut-butter', 'nutsOil', 'other', 'initial', 20)
 on conflict (id) do update set
   name = excluded.name,
   emoji = excluded.emoji,
+  asset_id = excluded.asset_id,
   category = excluded.category,
+  introduction_group = excluded.introduction_group,
   minimum_stage = excluded.minimum_stage,
   introduction_priority = excluded.introduction_priority;
-

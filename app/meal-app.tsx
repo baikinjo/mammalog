@@ -14,6 +14,7 @@ import {
   Plus,
   RefreshCw,
   Sprout,
+  X,
 } from "lucide-react";
 import {
   demoHistory,
@@ -22,11 +23,12 @@ import {
   ingredientDefinitions,
 } from "../lib/demo-data";
 import { createInitialMealSuggestion } from "../lib/recommendation-engine";
-import type { IngredientCategory, IngredientDefinition } from "../lib/domain";
+import type { IngredientCategory, IngredientDefinition, IntroductionGroup } from "../lib/domain";
 
 type Tab = "today" | "ingredients" | "records" | "profile";
 type Amount = "taste" | "quarter" | "half" | "most";
 type SettingKey = "start" | "time" | "style";
+type ChoiceSettingKey = Exclude<SettingKey, "time">;
 
 type CalendarDay = {
   id: string;
@@ -35,13 +37,6 @@ type CalendarDay = {
 };
 
 type CalendarCursor = { year: number; month: number };
-
-const preparationItems = [
-  "부부 계정 연결하기",
-  "아기의자 준비하기",
-  "숟가락과 컵 준비하기",
-  "첫 끼 시간을 가족과 정하기",
-];
 
 const amountLabels: Record<Amount, string> = {
   taste: "맛만 봄",
@@ -62,15 +57,46 @@ const ingredientAssetPaths: Record<string, string> = {
   pumpkin: "/ingredients/pumpkin.png",
   zucchini: "/ingredients/zucchini.png",
   apple: "/ingredients/apple.png",
+  pork: "/ingredients/pork.png",
+  chicken: "/ingredients/chicken.png",
+  broccoli: "/ingredients/broccoli.png",
+  carrot: "/ingredients/carrot.png",
+  "sweet-potato": "/ingredients/sweet-potato.png",
+  whitefish: "/ingredients/whitefish.png",
+  egg: "/ingredients/egg.png",
+  tofu: "/ingredients/tofu.png",
+  legumes: "/ingredients/legumes.png",
+  kelp: "/ingredients/kelp.png",
+  yogurt: "/ingredients/yogurt.png",
+  "peanut-butter": "/ingredients/peanut-butter.png",
 };
 
 const categoryLabels: Record<IngredientCategory, string> = {
   grain: "곡류",
-  meat: "고기",
-  leafy: "잎채소",
-  yellow: "노란 채소",
+  meat: "육류",
+  vegetable: "채소",
   fruit: "과일",
-  otherProtein: "기타 단백질",
+  fish: "생선",
+  seaweed: "해조류",
+  dairy: "유제품",
+  egg: "계란",
+  beans: "콩류",
+  nutsOil: "견과류·유지류",
+};
+
+const categoryOrder = Object.keys(categoryLabels) as IngredientCategory[];
+
+const introductionGroupByCategory: Record<IngredientCategory, IntroductionGroup> = {
+  grain: "grain",
+  meat: "meat",
+  vegetable: "leafy",
+  fruit: "fruit",
+  fish: "other",
+  seaweed: "other",
+  dairy: "other",
+  egg: "other",
+  beans: "other",
+  nutsOil: "other",
 };
 
 function toDateId(date: Date) {
@@ -90,6 +116,15 @@ function formatKoreanDate(dateId: string) {
   return `${date.getMonth() + 1}월 ${date.getDate()}일 ${weekdayLongLabels[date.getDay()]}`;
 }
 
+function formatKoreanTime(time: string) {
+  if (!/^\d{2}:\d{2}$/.test(time)) return "시간";
+  const [hourValue, minute = "00"] = time.split(":");
+  const hour = Number(hourValue);
+  const period = hour < 12 ? "오전" : "오후";
+  const displayHour = hour % 12 || 12;
+  return `${period} ${displayHour}:${minute}`;
+}
+
 function createMonthDays(cursor: CalendarCursor) {
   const total = new Date(cursor.year, cursor.month + 1, 0).getDate();
   return Array.from({ length: total }, (_, index): CalendarDay => {
@@ -98,14 +133,13 @@ function createMonthDays(cursor: CalendarCursor) {
   });
 }
 
-const settingOptions: Record<SettingKey, { title: string; values: string[] }> = {
+const settingOptions: Record<ChoiceSettingKey, { title: string; values: string[] }> = {
   start: { title: "예상 시작", values: ["만 5개월 반", "만 6개월", "소아과 상담 후"] },
-  time: { title: "첫 끼 시간", values: ["오전 9:00", "오전 10:00", "오전 11:00"] },
   style: { title: "조리 방식", values: ["바로 조리", "냉동 큐브 활용", "두 방식 함께"] },
 };
 
 function IngredientVisual({ ingredient, className = "" }: { ingredient: IngredientDefinition; className?: string }) {
-  const src = ingredientAssetPaths[ingredient.id];
+  const src = ingredientAssetPaths[ingredient.assetId ?? ingredient.id];
 
   return (
     <span className={`ingredient-visual ${src ? "" : "is-custom"} ${className}`.trim()} aria-hidden="true">
@@ -122,17 +156,7 @@ function BrandMark() {
   );
 }
 
-function TodayPrepare({
-  completed,
-  onToggle,
-  onPreview,
-}: {
-  completed: boolean[];
-  onToggle: (index: number) => void;
-  onPreview: () => void;
-}) {
-  const completedCount = completed.filter(Boolean).length;
-
+function TodayPrepare({ onPreview }: { onPreview: () => void }) {
   return (
     <>
       <section className="hero-card">
@@ -146,35 +170,6 @@ function TodayPrepare({
           <span className="orbit-dot orbit-one" />
           <span className="orbit-dot orbit-two" />
           <span className="orbit-spoon">⌇</span>
-        </div>
-      </section>
-
-      <section className="section-card readiness-card">
-        <div className="section-heading">
-          <div>
-            <span className="overline">이번 주</span>
-            <h2>시작 준비</h2>
-          </div>
-          <span className="fraction">{completedCount}/4</span>
-        </div>
-        <div className="progress-track" aria-label={`준비 항목 ${completedCount}개 완료`}>
-          <span style={{ width: `${(completedCount / 4) * 100}%` }} />
-        </div>
-        <div className="check-list">
-          {preparationItems.map((item, index) => (
-            <button
-              className={`check-row ${completed[index] ? "is-complete" : ""}`}
-              key={item}
-              type="button"
-              onClick={() => onToggle(index)}
-              aria-pressed={completed[index]}
-            >
-              <span className="check-circle" aria-hidden="true">
-                {completed[index] ? <Check size={15} strokeWidth={2.5} /> : ""}
-              </span>
-              <span>{item}</span>
-            </button>
-          ))}
         </div>
       </section>
 
@@ -352,11 +347,11 @@ function IngredientsView({
             <span className="overline">첫 순서</span>
             <h2>도입 대기 재료</h2>
           </div>
-          <span className="fraction">{ingredients.length}개</span>
+          <span className="count-badge">{ingredients.length}개</span>
         </div>
         <div className="ingredient-list">
           {ingredients.map((ingredient, index) => {
-            const isCustom = !ingredientAssetPaths[ingredient.id];
+            const isCustom = ingredient.id.startsWith("custom-");
             return (
               <button className="ingredient-row" type="button" key={ingredient.id} onClick={() => onSelect(ingredient)}>
                 <IngredientVisual ingredient={ingredient} />
@@ -447,7 +442,10 @@ function RecordsView({
             );
           })}
         </div>
-        <p className="calendar-hint">이전·다음 달로 이동하고 원하는 날짜를 눌러 기록을 확인하세요.</p>
+        <div className="calendar-footer">
+          <span className="record-dot-key"><i aria-hidden="true" /> 기록 있음</span>
+          <p className="calendar-hint">이전·다음 달로 이동하고 원하는 날짜를 눌러 기록을 확인하세요.</p>
+        </div>
       </section>
 
       <section className="section-card">
@@ -504,7 +502,7 @@ function ProfileView({
           <button type="button" aria-label="예상 시작일 수정" onClick={() => onEditSetting("start")}><ChevronRight size={19} /></button>
         </div>
         <div className="setting-row">
-          <div><span>첫 끼 시간</span><strong>{settings.time}</strong></div>
+          <div><span>첫 끼 시간</span><strong>{formatKoreanTime(settings.time)}</strong></div>
           <button type="button" aria-label="첫 끼 시간 수정" onClick={() => onEditSetting("time")}><ChevronRight size={19} /></button>
         </div>
         <div className="setting-row">
@@ -538,7 +536,7 @@ function IngredientSheet({
   ingredient: IngredientDefinition;
   onClose: () => void;
 }) {
-  const guidance = !ingredientAssetPaths[ingredient.id]
+  const guidance = ingredient.id.startsWith("custom-")
     ? "직접 추가한 재료예요. 가족의 계획에 맞춰 도입 시기를 정할 수 있어요."
     : ingredient.id === "rice" || ingredient.id === "oatmeal"
     ? "첫 곡류로 소량부터 시작해요."
@@ -555,7 +553,7 @@ function IngredientSheet({
             <IngredientVisual ingredient={ingredient} className="is-sheet" />
             <div><span className="overline">도입 순서 {ingredient.introductionPriority}</span><h2 id="ingredient-title">{ingredient.name}</h2></div>
           </div>
-          <button className="close-button" type="button" onClick={onClose} aria-label="닫기">×</button>
+          <button className="close-button" type="button" onClick={onClose} aria-label="닫기"><X size={19} /></button>
         </div>
         <dl className="detail-list">
           <div><dt>권장 흐름</dt><dd>{guidance}</dd></div>
@@ -572,16 +570,43 @@ function AddIngredientSheet({
   onAdd,
   onClose,
 }: {
-  onAdd: (name: string, category: IngredientCategory) => void;
+  onAdd: (name: string, category: IngredientCategory, assetId: string) => void;
   onClose: () => void;
 }) {
   const [name, setName] = useState("");
-  const [category, setCategory] = useState<IngredientCategory>("leafy");
+  const [category, setCategory] = useState<IngredientCategory>("vegetable");
+  const [assetId, setAssetId] = useState("broccoli");
+  const matchingIngredient = ingredientDefinitions.find(
+    (ingredient) => ingredient.name.replace(/\s/g, "") === name.trim().replace(/\s/g, ""),
+  );
+  const assetChoices = ingredientDefinitions.filter(
+    (ingredient) => ingredient.category === category && ingredientAssetPaths[ingredient.id],
+  );
+
+  const chooseCategory = (nextCategory: IngredientCategory) => {
+    setCategory(nextCategory);
+    const firstAsset = ingredientDefinitions.find(
+      (ingredient) => ingredient.category === nextCategory && ingredientAssetPaths[ingredient.id],
+    );
+    if (firstAsset) setAssetId(firstAsset.id);
+  };
+
+  const changeName = (value: string) => {
+    setName(value);
+    const normalized = value.trim().replace(/\s/g, "");
+    const match = ingredientDefinitions.find(
+      (ingredient) => ingredient.name.replace(/\s/g, "") === normalized,
+    );
+    if (match) {
+      setCategory(match.category);
+      setAssetId(match.id);
+    }
+  };
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const trimmedName = name.trim();
-    if (trimmedName) onAdd(trimmedName, category);
+    if (trimmedName && assetId && !matchingIngredient) onAdd(trimmedName, category, assetId);
   };
 
   return (
@@ -590,21 +615,52 @@ function AddIngredientSheet({
         <div className="sheet-handle" aria-hidden="true" />
         <div className="sheet-heading">
           <div><span className="overline">내 재료</span><h2 id="add-ingredient-title">재료 직접 추가</h2></div>
-          <button className="close-button" type="button" onClick={onClose} aria-label="닫기">×</button>
+          <button className="close-button" type="button" onClick={onClose} aria-label="닫기"><X size={19} /></button>
         </div>
         <form className="ingredient-form" onSubmit={submit}>
-          <label>
+          <label className="form-field">
             <span>재료 이름</span>
-            <input value={name} onChange={(event) => setName(event.target.value)} placeholder="예: 닭고기" autoFocus />
+            <input aria-label="재료 이름" value={name} onChange={(event) => changeName(event.target.value)} placeholder="예: 감자" autoFocus />
           </label>
-          <label>
-            <span>재료 분류</span>
-            <select value={category} onChange={(event) => setCategory(event.target.value as IngredientCategory)}>
-              {(Object.keys(categoryLabels) as IngredientCategory[]).map((value) => <option value={value} key={value}>{categoryLabels[value]}</option>)}
-            </select>
-          </label>
-          <p>직접 추가한 재료도 섭취량과 반응 기록에 사용할 수 있어요.</p>
-          <button className="primary-action" type="submit" disabled={!name.trim()}>재료 추가</button>
+          <fieldset className="form-field">
+            <legend>책 식품군</legend>
+            <div className="category-picker">
+              {categoryOrder.map((value) => (
+                <button
+                  className={category === value ? "is-selected" : ""}
+                  type="button"
+                  key={value}
+                  onClick={() => chooseCategory(value)}
+                  aria-pressed={category === value}
+                >
+                  {categoryLabels[value]}
+                </button>
+              ))}
+            </div>
+          </fieldset>
+          <fieldset className="form-field">
+            <legend>재료 이미지</legend>
+            <div className="asset-picker">
+              {assetChoices.map((ingredient) => (
+                <button
+                  className={assetId === ingredient.id ? "is-selected" : ""}
+                  type="button"
+                  key={ingredient.id}
+                  onClick={() => setAssetId(ingredient.id)}
+                  aria-label={`${ingredient.name} 이미지 선택`}
+                  aria-pressed={assetId === ingredient.id}
+                >
+                  <IngredientVisual ingredient={ingredient} />
+                  <span>{ingredient.name}</span>
+                  {assetId === ingredient.id && <Check size={14} aria-hidden="true" />}
+                </button>
+              ))}
+            </div>
+          </fieldset>
+          <p>{matchingIngredient ? `${matchingIngredient.name}은(는) 기본 재료 목록에 이미 있어요.` : "책의 식품군을 고르고, 재료에 맞는 이미지를 직접 선택할 수 있어요."}</p>
+          <button className="primary-action" type="submit" disabled={!name.trim() || !assetId || Boolean(matchingIngredient)}>
+            {matchingIngredient ? "이미 등록된 재료예요" : "재료 추가"}
+          </button>
         </form>
       </section>
     </div>
@@ -617,7 +673,7 @@ function SettingSheet({
   onSelect,
   onClose,
 }: {
-  settingKey: SettingKey;
+  settingKey: ChoiceSettingKey;
   value: string;
   onSelect: (value: string) => void;
   onClose: () => void;
@@ -630,7 +686,7 @@ function SettingSheet({
         <div className="sheet-handle" aria-hidden="true" />
         <div className="sheet-heading">
           <div><span className="overline">우리 아이 설정</span><h2 id="setting-title">{option.title}</h2></div>
-          <button className="close-button" type="button" onClick={onClose} aria-label="닫기">×</button>
+          <button className="close-button" type="button" onClick={onClose} aria-label="닫기"><X size={19} /></button>
         </div>
         <div className="setting-options">
           {option.values.map((item) => (
@@ -639,6 +695,46 @@ function SettingSheet({
             </button>
           ))}
         </div>
+      </section>
+    </div>
+  );
+}
+
+function TimeSettingSheet({
+  value,
+  onSave,
+  onClose,
+}: {
+  value: string;
+  onSave: (value: string) => void;
+  onClose: () => void;
+}) {
+  const [time, setTime] = useState(value);
+
+  return (
+    <div className="sheet-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="record-sheet compact-sheet" role="dialog" aria-modal="true" aria-labelledby="time-setting-title" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="sheet-handle" aria-hidden="true" />
+        <div className="sheet-heading">
+          <div><span className="overline">우리 아이 설정</span><h2 id="time-setting-title">첫 끼 시간</h2></div>
+          <button className="close-button" type="button" onClick={onClose} aria-label="닫기"><X size={19} /></button>
+        </div>
+        <form className="time-form" onSubmit={(event) => { event.preventDefault(); onSave(time); }}>
+          <label htmlFor="first-meal-time">원하는 시간을 직접 설정하세요</label>
+          <div className="time-input-wrap">
+            <input
+              id="first-meal-time"
+              aria-label="첫 끼 시간"
+              type="time"
+              step="300"
+              value={time}
+              onInput={(event) => setTime(event.currentTarget.value)}
+              onChange={(event) => setTime(event.target.value)}
+            />
+          </div>
+          <p>아이폰과 아이패드에서는 기기의 시간 선택 다이얼이 열립니다.</p>
+          <button className="primary-action" type="submit" disabled={!time}>{formatKoreanTime(time)}에 저장</button>
+        </form>
       </section>
     </div>
   );
@@ -672,7 +768,7 @@ function RecordSheet({
             <span className="overline">오전 10:00</span>
             <h2 id="record-title">첫 식사는 어땠나요?</h2>
           </div>
-          <button className="close-button" type="button" onClick={onClose} aria-label="닫기">×</button>
+          <button className="close-button" type="button" onClick={onClose} aria-label="닫기"><X size={19} /></button>
         </div>
 
         <fieldset>
@@ -730,7 +826,6 @@ function RecordSheet({
 export function MealApp() {
   const [activeTab, setActiveTab] = useState<Tab>("today");
   const [previewStarted, setPreviewStarted] = useState(false);
-  const [completed, setCompleted] = useState([true, false, false, false]);
   const [recordOpen, setRecordOpen] = useState(false);
   const [recordDate, setRecordDate] = useState<string | null>(null);
   const [amount, setAmount] = useState<Amount>("quarter");
@@ -746,7 +841,7 @@ export function MealApp() {
   const [editingSetting, setEditingSetting] = useState<SettingKey | null>(null);
   const [settings, setSettings] = useState<Record<SettingKey, string>>({
     start: "만 6개월",
-    time: "오전 10:00",
+    time: "10:00",
     style: "냉동 큐브 활용",
   });
   const [toast, setToast] = useState<string | null>(null);
@@ -755,12 +850,6 @@ export function MealApp() {
   const showToast = (message: string) => {
     setToast(message);
     window.setTimeout(() => setToast(null), 2600);
-  };
-
-  const togglePreparation = (index: number) => {
-    setCompleted((items) =>
-      items.map((item, itemIndex) => (itemIndex === index ? !item : item)),
-    );
   };
 
   const saveRecord = () => {
@@ -772,20 +861,22 @@ export function MealApp() {
     showToast("식사 기록을 가족과 동기화할 준비가 됐어요.");
   };
 
-  const addIngredient = (name: string, category: IngredientCategory) => {
+  const addIngredient = (name: string, category: IngredientCategory, assetId: string) => {
     setCustomIngredients((current) => [
       ...current,
       {
         id: `custom-${Date.now()}`,
         name,
         emoji: "",
+        assetId,
         category,
+        introductionGroup: introductionGroupByCategory[category],
         minimumStage: "initial",
         introductionPriority: ingredientDefinitions.length + current.length + 1,
       },
     ]);
     setAddIngredientOpen(false);
-    showToast(`${name}을(를) 재료 목록에 추가했어요.`);
+    showToast(`${name} 재료를 목록에 추가했어요.`);
   };
 
   const moveCalendarMonth = (direction: -1 | 1) => {
@@ -811,7 +902,6 @@ export function MealApp() {
     const payload = {
       exportedAt: new Date().toISOString(),
       child: { nickname: demoProfile.nickname, ageMonths: demoProfile.ageMonths },
-      preparation: completed,
       settings,
       customIngredients,
       firstMeal: recordDate ? { date: recordDate, amount: amountLabels[amount] } : null,
@@ -857,7 +947,7 @@ export function MealApp() {
           previewStarted ? (
             <TodayMeal onBack={() => setPreviewStarted(false)} onRecord={() => setRecordOpen(true)} />
           ) : (
-            <TodayPrepare completed={completed} onToggle={togglePreparation} onPreview={() => setPreviewStarted(true)} />
+            <TodayPrepare onPreview={() => setPreviewStarted(true)} />
           )
         )}
         {activeTab === "ingredients" && (
@@ -902,7 +992,11 @@ export function MealApp() {
 
       {addIngredientOpen && <AddIngredientSheet onAdd={addIngredient} onClose={() => setAddIngredientOpen(false)} />}
 
-      {editingSetting && (
+      {editingSetting === "time" && (
+        <TimeSettingSheet value={settings.time} onSave={updateSetting} onClose={() => setEditingSetting(null)} />
+      )}
+
+      {editingSetting && editingSetting !== "time" && (
         <SettingSheet settingKey={editingSetting} value={settings[editingSetting]} onSelect={updateSetting} onClose={() => setEditingSetting(null)} />
       )}
 

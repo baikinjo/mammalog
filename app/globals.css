@@ -42,9 +42,24 @@ body {
 
 button,
 input,
-textarea,
-select {
+textarea {
   font: inherit;
+}
+
+h1,
+h2,
+h3,
+p,
+button,
+label,
+legend,
+dt,
+dd,
+strong,
+small,
+span {
+  overflow-wrap: break-word;
+  word-break: keep-all;
 }
 
 button,
@@ -195,6 +210,11 @@ button {
   gap: 16px;
 }
 
+.section-heading > :last-child,
+.sheet-heading > :last-child {
+  flex: 0 0 auto;
+}
+
 .hero-kicker > span:first-child,
 .overline {
   color: var(--sage-deep);
@@ -290,66 +310,18 @@ button {
   letter-spacing: -0.045em;
 }
 
-.fraction {
-  color: var(--sage-deep);
-  font-family: Georgia, serif;
-  font-size: 22px;
-  font-style: italic;
-}
-
-.progress-track {
-  height: 7px;
-  overflow: hidden;
-  margin: 18px 0;
-  border-radius: 99px;
-  background: var(--canvas-deep);
-}
-
-.progress-track span {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, var(--sage), #91a68d);
-  transition: width 240ms ease;
-}
-
-.check-list {
-  display: grid;
-}
-
-.check-row {
-  display: flex;
-  min-height: 52px;
+.count-badge {
+  display: inline-flex;
+  min-width: 48px;
+  min-height: 32px;
   align-items: center;
-  gap: 12px;
-  padding: 10px 0;
-  border: 0;
-  border-bottom: 1px solid var(--line);
-  background: transparent;
-  color: var(--ink);
-  text-align: left;
-  cursor: pointer;
-}
-
-.check-row:last-child { border-bottom: 0; }
-.check-row.is-complete { color: var(--ink-soft); }
-
-.check-circle {
-  display: grid;
-  width: 25px;
-  height: 25px;
-  flex: 0 0 auto;
-  place-items: center;
-  border: 1px solid #b9b3a7;
-  border-radius: 50%;
-  color: var(--paper);
-  font-size: 13px;
-  transition: 180ms ease;
-}
-
-.is-complete .check-circle {
-  border-color: var(--sage);
-  background: var(--sage);
+  justify-content: center;
+  padding: 0 11px;
+  border-radius: 999px;
+  background: var(--sage-soft);
+  color: var(--sage-deep);
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .mini-icon {
@@ -651,7 +623,7 @@ button {
 .ingredient-row > div { display: grid; gap: 4px; }
 .ingredient-row strong { font-size: 14px; }
 .ingredient-row > div span { color: var(--ink-soft); font-size: 11px; }
-.ingredient-order { display: inline-flex; align-items: center; gap: 5px; color: #aaa395; }
+.ingredient-order { display: grid; min-width: 48px; grid-template-columns: 26px 18px; align-items: center; justify-items: center; gap: 4px; color: #aaa395; }
 .ingredient-order i { font-family: Georgia, serif; font-size: 18px; font-style: normal; }
 .add-ingredient-button { display: flex; width: 100%; min-height: 48px; align-items: center; justify-content: center; gap: 8px; margin-top: 14px; border: 1px dashed rgba(80, 102, 78, 0.45); border-radius: 16px; background: rgba(223, 232, 217, 0.34); color: var(--sage-deep); font-size: 12px; font-weight: 700; cursor: pointer; }
 
@@ -670,15 +642,18 @@ button {
 .calendar-blank { min-height: 44px; }
 .calendar-day { position: relative; display: grid; min-width: 0; min-height: 44px; place-items: center; padding: 3px; border: 0; border-radius: 14px; background: transparent; color: var(--ink-soft); cursor: pointer; }
 .calendar-day > span { font-size: 12px; font-weight: 700; }
-.calendar-day i { position: absolute; bottom: 5px; width: 4px; height: 4px; border-radius: 50%; background: transparent; }
+.calendar-day i { position: absolute; bottom: 4px; width: 5px; height: 5px; border-radius: 50%; background: transparent; }
 .calendar-day.is-today:not(.is-selected) { box-shadow: inset 0 0 0 1px rgba(80, 102, 78, 0.36); color: var(--sage-deep); }
 .calendar-day.is-selected { background: var(--sage-soft); color: var(--sage-deep); }
-.calendar-day.has-record i { background: var(--apricot); }
-.calendar-hint { margin: 16px 0 0; color: var(--ink-soft); font-size: 10px; line-height: 1.6; text-align: center; }
+.calendar-day.has-record i { background: #c97547; box-shadow: 0 0 0 2px var(--paper); }
+.calendar-footer { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 16px; }
+.record-dot-key { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; color: var(--ink-soft); font-size: 10px; }
+.record-dot-key i { width: 6px; height: 6px; border-radius: 50%; background: #c97547; }
+.calendar-hint { margin: 0; color: var(--ink-soft); font-size: 10px; line-height: 1.6; text-align: right; }
 
 .empty-state { display: grid; justify-items: center; gap: 12px; padding: 36px 18px 18px; color: var(--ink-soft); text-align: center; }
 .empty-state > span { font-size: 44px; color: #c8c1b3; }
-.empty-state p { max-width: 290px; margin: 0; font-size: 12px; line-height: 1.7; }
+.empty-state p { width: 100%; max-width: 36rem; margin: 0; font-size: 12px; line-height: 1.75; text-wrap: pretty; }
 
 .saved-record { display: grid; grid-template-columns: 64px 1fr auto; width: 100%; gap: 16px; align-items: center; margin-top: 20px; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
 .saved-date { display: grid; width: 62px; height: 70px; place-items: center; align-content: center; border-radius: 20px; background: var(--sage-soft); color: var(--sage-deep); }
@@ -693,12 +668,13 @@ button {
 .baby-avatar { display: grid; width: 76px; height: 76px; flex: 0 0 auto; place-items: center; border-radius: 28px; background: linear-gradient(145deg, var(--sage-soft), var(--paper)); color: var(--sage-deep); font-family: Georgia, serif; font-size: 28px; box-shadow: inset 0 0 0 1px rgba(110, 132, 107, 0.18); }
 
 .profile-settings { padding-block: 8px; }
-.setting-row { display: flex; align-items: center; justify-content: space-between; min-height: 72px; padding: 13px 2px; border-bottom: 1px solid var(--line); }
+.setting-row { display: grid; min-height: 72px; grid-template-columns: minmax(0, 1fr) 40px; align-items: center; gap: 16px; padding: 13px 2px; border-bottom: 1px solid var(--line); }
 .setting-row:last-child { border-bottom: 0; }
 .setting-row > div { display: grid; gap: 5px; }
 .setting-row span { color: var(--ink-soft); font-size: 11px; }
 .setting-row strong { font-size: 14px; }
-.setting-row button { width: 36px; height: 36px; border: 0; border-radius: 50%; background: var(--canvas); color: var(--sage-deep); font-size: 22px; cursor: pointer; }
+.setting-row button { display: grid; width: 40px; height: 40px; place-items: center; justify-self: end; padding: 0; border: 0; border-radius: 50%; background: var(--canvas); color: var(--sage-deep); cursor: pointer; }
+.setting-row button svg { display: block; }
 
 .family-list { display: grid; gap: 14px; margin-top: 20px; }
 .family-list > div { display: flex; align-items: center; gap: 12px; }
@@ -775,15 +751,29 @@ button {
 .setting-options { display: grid; gap: 8px; margin-top: 22px; }
 .setting-options button { display: flex; min-height: 56px; align-items: center; justify-content: space-between; gap: 12px; padding: 0 16px; border: 1px solid var(--line); border-radius: 17px; background: var(--paper); color: var(--ink); text-align: left; cursor: pointer; }
 .setting-options button.is-selected { border-color: rgba(80, 102, 78, 0.45); background: var(--sage-soft); color: var(--sage-deep); font-weight: 700; }
-.ingredient-form { display: grid; gap: 17px; margin-top: 24px; }
-.ingredient-form label { display: grid; gap: 8px; }
-.ingredient-form label > span { font-size: 12px; font-weight: 700; }
-.ingredient-form input,
-.ingredient-form select { min-height: 50px; width: 100%; padding: 0 14px; border: 1px solid var(--line); border-radius: 15px; outline: 0; background: var(--canvas); color: var(--ink); }
-.ingredient-form input:focus,
-.ingredient-form select:focus { border-color: var(--sage); box-shadow: 0 0 0 3px rgba(110, 132, 107, 0.13); }
+.ingredient-form { display: grid; gap: 20px; margin-top: 24px; }
+.form-field { display: grid; gap: 9px; margin: 0; padding: 0; border: 0; }
+.form-field > span,
+.form-field > legend { padding: 0; font-size: 12px; font-weight: 700; }
+.ingredient-form input { min-height: 52px; width: 100%; padding: 0 15px; border: 1px solid var(--line); border-radius: 15px; outline: 0; background: var(--canvas); color: var(--ink); }
+.ingredient-form input:focus { border-color: var(--sage); box-shadow: 0 0 0 3px rgba(110, 132, 107, 0.13); }
+.category-picker { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.category-picker button { min-height: 42px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 13px; background: var(--paper); color: var(--ink-soft); font-size: 11px; cursor: pointer; }
+.category-picker button.is-selected { border-color: rgba(80, 102, 78, 0.48); background: var(--sage-soft); color: var(--sage-deep); font-weight: 700; }
+.asset-picker { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.asset-picker button { position: relative; display: grid; min-width: 0; min-height: 88px; place-items: center; align-content: center; gap: 5px; padding: 7px 4px; border: 1px solid var(--line); border-radius: 15px; background: var(--paper); color: var(--ink-soft); font-size: 9px; cursor: pointer; }
+.asset-picker button.is-selected { border-color: var(--sage); background: rgba(223, 232, 217, 0.5); color: var(--sage-deep); font-weight: 700; }
+.asset-picker .ingredient-visual { width: 48px; height: 48px; }
+.asset-picker button > svg { position: absolute; top: 7px; right: 7px; }
 .ingredient-form p { margin: -2px 0 2px; color: var(--ink-soft); font-size: 11px; line-height: 1.6; }
 .ingredient-form .primary-action:disabled { cursor: not-allowed; opacity: 0.42; }
+
+.time-form { display: grid; gap: 17px; margin-top: 26px; }
+.time-form > label { font-size: 12px; font-weight: 700; }
+.time-input-wrap { display: flex; min-height: 74px; align-items: center; padding: 0 18px; border: 1px solid rgba(80, 102, 78, 0.4); border-radius: 20px; background: var(--sage-soft); color: var(--sage-deep); }
+.time-input-wrap input { min-width: 0; width: 100%; border: 0; outline: 0; background: transparent; color: var(--sage-deep); font-size: 27px; font-weight: 700; }
+.time-form p { margin: -4px 0 4px; color: var(--ink-soft); font-size: 11px; line-height: 1.6; }
+.time-form .primary-action:disabled { cursor: not-allowed; opacity: 0.42; }
 
 @keyframes sheet-up {
   from { transform: translateY(30px); opacity: 0; }
@@ -792,11 +782,14 @@ button {
 
 .sheet-handle { width: 42px; height: 4px; margin: 0 auto 22px; border-radius: 99px; background: var(--line); }
 .sheet-heading { align-items: flex-start; }
-.close-button { display: grid; width: 38px; height: 38px; place-items: center; border: 0; border-radius: 50%; background: var(--canvas); color: var(--ink-soft); font-size: 22px; cursor: pointer; }
+.close-button { display: grid; width: 40px; height: 40px; flex: 0 0 auto; place-items: center; padding: 0; border: 0; border-radius: 50%; background: var(--canvas); color: var(--ink-soft); cursor: pointer; }
+.close-button svg { display: block; }
 
 .record-sheet fieldset { margin: 26px 0 0; padding: 0; border: 0; }
+.record-sheet .ingredient-form fieldset.form-field { margin: 0; }
 .record-sheet legend,
 .note-field > span { margin-bottom: 12px; font-size: 13px; font-weight: 700; }
+.record-sheet .ingredient-form .form-field > legend { margin-bottom: 0; font-size: 12px; }
 
 .amount-options { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
 .amount-options button { display: grid; min-height: 72px; place-items: center; align-content: center; gap: 5px; padding: 8px 4px; border: 1px solid var(--line); border-radius: 17px; background: transparent; color: var(--ink-soft); font-size: 11px; cursor: pointer; }
@@ -833,7 +826,6 @@ button:focus-visible,
 a:focus-visible,
 summary:focus-visible,
 input:focus-visible,
-select:focus-visible,
 textarea:focus-visible {
   outline: 3px solid rgba(110, 132, 107, 0.35);
   outline-offset: 3px;
@@ -878,6 +870,8 @@ textarea:focus-visible {
   .calendar-card-heading h2 { font-size: 18px; }
   .today-button { padding-inline: 9px; }
   .calendar-day { min-height: 42px; }
+  .calendar-footer { display: grid; justify-items: start; gap: 8px; }
+  .calendar-hint { text-align: left; }
   .amount-options { grid-template-columns: repeat(2, 1fr); }
   .sheet-backdrop { padding-inline: 0; }
   .record-sheet { padding-inline: 20px; }
