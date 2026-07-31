@@ -528,7 +528,10 @@ button {
   margin: 18px 0;
 }
 
-.ingredient-chips span {
+.ingredient-chips > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   padding: 8px 11px;
   border-radius: 999px;
   background: var(--canvas);
@@ -617,7 +620,6 @@ button {
 .next-card { background: linear-gradient(145deg, var(--paper), var(--apricot-soft)) !important; }
 .status-label { color: var(--ink-soft); font-size: 11px; }
 .ingredient-large { display: flex; align-items: center; gap: 10px; margin: 22px 0 8px; }
-.ingredient-large span { font-size: 28px; }
 .ingredient-large strong { font-size: 18px; }
 .status-card p { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0; color: var(--ink-soft); font-size: 12px; }
 
@@ -640,24 +642,39 @@ button {
 }
 
 .ingredient-row:last-child { border-bottom: 0; }
-.ingredient-emoji { display: grid; width: 42px; height: 42px; place-items: center; border-radius: 15px; background: var(--canvas); font-size: 20px; }
+.ingredient-visual { display: grid; width: 46px; height: 46px; flex: 0 0 auto; place-items: center; overflow: hidden; border-radius: 15px; background: var(--canvas); color: var(--sage-deep); }
+.ingredient-visual img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.ingredient-visual.is-large { width: 54px; height: 54px; border-radius: 17px; }
+.ingredient-visual.is-chip { width: 24px; height: 24px; border-radius: 8px; }
+.ingredient-visual.is-sheet { width: 58px; height: 58px; border-radius: 18px; }
+.ingredient-visual.is-custom { background: linear-gradient(145deg, var(--sage-soft), var(--paper)); }
 .ingredient-row > div { display: grid; gap: 4px; }
 .ingredient-row strong { font-size: 14px; }
 .ingredient-row > div span { color: var(--ink-soft); font-size: 11px; }
 .ingredient-order { display: inline-flex; align-items: center; gap: 5px; color: #aaa395; }
 .ingredient-order i { font-family: Georgia, serif; font-size: 18px; font-style: normal; }
+.add-ingredient-button { display: flex; width: 100%; min-height: 48px; align-items: center; justify-content: center; gap: 8px; margin-top: 14px; border: 1px dashed rgba(80, 102, 78, 0.45); border-radius: 16px; background: rgba(223, 232, 217, 0.34); color: var(--sage-deep); font-size: 12px; font-weight: 700; cursor: pointer; }
 
 .record-week { overflow: hidden; }
-.calendar-hint { margin: 18px 0 10px; color: var(--ink-soft); font-size: 11px; }
-.calendar-scroll { overflow-x: auto; margin-inline: -4px; padding: 4px 4px 10px; scroll-snap-type: x proximity; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
-.calendar-scroll::-webkit-scrollbar { display: none; }
-.week-row { display: flex; width: max-content; gap: 7px; }
-.week-day { display: grid; width: 54px; min-height: 74px; flex: 0 0 auto; gap: 7px; place-items: center; padding: 8px 2px; border: 0; border-radius: 18px; background: transparent; color: var(--ink-soft); cursor: pointer; scroll-snap-align: start; }
-.week-day span { font-size: 10px; }
-.week-day strong { font-size: 13px; }
-.week-day i { width: 5px; height: 5px; border-radius: 50%; background: transparent; }
-.week-day.is-selected { background: var(--sage-soft); color: var(--sage-deep); box-shadow: inset 0 0 0 1px rgba(80, 102, 78, 0.08); }
-.week-day.has-record i { background: var(--sage); }
+.calendar-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.calendar-card-heading h2 { margin: 4px 0 0; font-size: 21px; letter-spacing: -0.045em; }
+.today-button { display: inline-flex; min-height: 38px; flex: 0 0 auto; align-items: center; gap: 6px; padding: 0 11px; border: 1px solid rgba(80, 102, 78, 0.3); border-radius: 13px; background: var(--paper); color: var(--sage-deep); font-size: 11px; font-weight: 700; cursor: pointer; }
+.month-navigation { display: grid; grid-template-columns: 38px 1fr 38px; align-items: center; gap: 8px; margin: 22px 0 17px; }
+.month-navigation strong { text-align: center; font-size: 16px; }
+.month-navigation button { display: grid; width: 38px; height: 38px; place-items: center; border: 0; border-radius: 50%; background: var(--canvas); color: var(--sage-deep); cursor: pointer; }
+.calendar-weekdays,
+.month-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 5px; }
+.calendar-weekdays { margin-bottom: 6px; }
+.calendar-weekdays span { color: var(--ink-soft); font-size: 10px; text-align: center; }
+.month-grid { align-items: center; }
+.calendar-blank { min-height: 44px; }
+.calendar-day { position: relative; display: grid; min-width: 0; min-height: 44px; place-items: center; padding: 3px; border: 0; border-radius: 14px; background: transparent; color: var(--ink-soft); cursor: pointer; }
+.calendar-day > span { font-size: 12px; font-weight: 700; }
+.calendar-day i { position: absolute; bottom: 5px; width: 4px; height: 4px; border-radius: 50%; background: transparent; }
+.calendar-day.is-today:not(.is-selected) { box-shadow: inset 0 0 0 1px rgba(80, 102, 78, 0.36); color: var(--sage-deep); }
+.calendar-day.is-selected { background: var(--sage-soft); color: var(--sage-deep); }
+.calendar-day.has-record i { background: var(--apricot); }
+.calendar-hint { margin: 16px 0 0; color: var(--ink-soft); font-size: 10px; line-height: 1.6; text-align: center; }
 
 .empty-state { display: grid; justify-items: center; gap: 12px; padding: 36px 18px 18px; color: var(--ink-soft); text-align: center; }
 .empty-state > span { font-size: 44px; color: #c8c1b3; }
@@ -758,6 +775,15 @@ button {
 .setting-options { display: grid; gap: 8px; margin-top: 22px; }
 .setting-options button { display: flex; min-height: 56px; align-items: center; justify-content: space-between; gap: 12px; padding: 0 16px; border: 1px solid var(--line); border-radius: 17px; background: var(--paper); color: var(--ink); text-align: left; cursor: pointer; }
 .setting-options button.is-selected { border-color: rgba(80, 102, 78, 0.45); background: var(--sage-soft); color: var(--sage-deep); font-weight: 700; }
+.ingredient-form { display: grid; gap: 17px; margin-top: 24px; }
+.ingredient-form label { display: grid; gap: 8px; }
+.ingredient-form label > span { font-size: 12px; font-weight: 700; }
+.ingredient-form input,
+.ingredient-form select { min-height: 50px; width: 100%; padding: 0 14px; border: 1px solid var(--line); border-radius: 15px; outline: 0; background: var(--canvas); color: var(--ink); }
+.ingredient-form input:focus,
+.ingredient-form select:focus { border-color: var(--sage); box-shadow: 0 0 0 3px rgba(110, 132, 107, 0.13); }
+.ingredient-form p { margin: -2px 0 2px; color: var(--ink-soft); font-size: 11px; line-height: 1.6; }
+.ingredient-form .primary-action:disabled { cursor: not-allowed; opacity: 0.42; }
 
 @keyframes sheet-up {
   from { transform: translateY(30px); opacity: 0; }
@@ -806,6 +832,8 @@ button {
 button:focus-visible,
 a:focus-visible,
 summary:focus-visible,
+input:focus-visible,
+select:focus-visible,
 textarea:focus-visible {
   outline: 3px solid rgba(110, 132, 107, 0.35);
   outline-offset: 3px;
@@ -846,7 +874,10 @@ textarea:focus-visible {
   .day-number { font-size: 60px; }
   .page-intro { align-items: flex-start; }
   .ingredient-status-grid > .status-card { padding: 18px; }
-  .week-day { width: 50px; }
+  .calendar-card-heading { align-items: center; }
+  .calendar-card-heading h2 { font-size: 18px; }
+  .today-button { padding-inline: 9px; }
+  .calendar-day { min-height: 42px; }
   .amount-options { grid-template-columns: repeat(2, 1fr); }
   .sheet-backdrop { padding-inline: 0; }
   .record-sheet { padding-inline: 20px; }
