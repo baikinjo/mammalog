@@ -2,8 +2,8 @@ import type { MetadataRoute } from "next";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "차곡한끼 · 우리 아이 이유식",
-    short_name: "차곡한끼",
+    name: "맘마로그 · 우리 아이 이유식",
+    short_name: "맘마로그",
     description: "부부가 함께 쓰는 적응형 이유식 기록과 추천",
     start_url: "/",
     display: "standalone",

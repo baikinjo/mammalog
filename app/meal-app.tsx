@@ -931,9 +931,9 @@ export function MealApp() {
   return (
     <div className="site-shell">
       <header className="app-header">
-        <a className="brand" href="#top" aria-label="차곡한끼 홈" onClick={goHome}>
+        <a className="brand" href="#top" aria-label="맘마로그 홈" onClick={goHome}>
           <BrandMark />
-          <span><strong>차곡한끼</strong><small>우리 아이의 첫 식사</small></span>
+          <span><strong>맘마로그</strong><small>우리 아이의 첫 식사</small></span>
         </a>
         <button className="family-button" type="button" onClick={() => switchTab("profile")}>
           <span className="avatar-pair" aria-hidden="true"><i>아</i><i>엄</i></span>

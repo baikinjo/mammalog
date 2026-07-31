@@ -28,7 +28,7 @@ test("renders the Korean preparation dashboard", async () => {
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
-  assert.match(html, /차곡한끼/);
+  assert.match(html, /맘마로그/);
   assert.match(html, /이유식 준비 중|첫 한끼를/);
   assert.match(html, /우리 아이의 첫 식사/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton/i);
@@ -38,7 +38,6 @@ test("serves an installable web app manifest", async () => {
   const response = await render("/manifest.webmanifest");
   assert.equal(response.status, 200);
   const manifest = await response.json();
-  assert.equal(manifest.short_name, "차곡한끼");
+  assert.equal(manifest.short_name, "맘마로그");
   assert.equal(manifest.display, "standalone");
 });
-

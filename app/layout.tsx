@@ -17,13 +17,13 @@ export async function generateMetadata(): Promise<Metadata> {
 
   return {
     metadataBase: baseUrl,
-    title: "차곡한끼 · 우리 아이의 첫 식사",
+    title: "맘마로그 · 우리 아이의 첫 식사",
     description,
-    applicationName: "차곡한끼",
+    applicationName: "맘마로그",
     appleWebApp: {
       capable: true,
       statusBarStyle: "default",
-      title: "차곡한끼",
+      title: "맘마로그",
     },
     formatDetection: {
       telephone: false,
@@ -37,15 +37,15 @@ export async function generateMetadata(): Promise<Metadata> {
     },
     openGraph: {
       type: "website",
-      title: "차곡한끼",
+      title: "맘마로그",
       description,
-      images: [{ url: new URL("/og.png", baseUrl).toString(), width: 1200, height: 630, alt: "차곡한끼 — 우리 아이의 첫 식사를 차곡차곡" }],
+      images: [{ url: new URL("/og-mammalog.png", baseUrl).toString(), width: 1200, height: 630, alt: "맘마로그 — 우리 아이의 첫 식사를 함께 기록해요" }],
     },
     twitter: {
       card: "summary_large_image",
-      title: "차곡한끼",
+      title: "맘마로그",
       description,
-      images: [new URL("/og.png", baseUrl).toString()],
+      images: [new URL("/og-mammalog.png", baseUrl).toString()],
     },
   };
 }
