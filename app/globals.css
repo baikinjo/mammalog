@@ -700,6 +700,7 @@ button {
 .profile-hero { display: flex; align-items: center; gap: 20px; padding: 26px; }
 .profile-hero h1 { margin: 5px 0; font-size: 30px; }
 .baby-avatar { display: grid; width: 76px; height: 76px; flex: 0 0 auto; place-items: center; border-radius: 28px; background: linear-gradient(145deg, var(--sage-soft), var(--paper)); color: var(--sage-deep); font-family: Georgia, serif; font-size: 28px; box-shadow: inset 0 0 0 1px rgba(110, 132, 107, 0.18); }
+.profile-edit-action { min-height: 36px; margin-left: auto; padding: 0 12px; border: 1px solid rgba(80, 102, 78, 0.32); border-radius: 999px; background: transparent; color: var(--sage-deep); font-size: 10px; font-weight: 700; cursor: pointer; }
 
 .profile-settings { padding-block: 8px; }
 .setting-row { display: grid; min-height: 72px; grid-template-columns: minmax(0, 1fr) 40px; align-items: center; gap: 16px; padding: 13px 2px; border-bottom: 1px solid var(--line); }
@@ -846,6 +847,18 @@ button {
 .ingredient-form p { margin: -2px 0 2px; color: var(--ink-soft); font-size: 11px; line-height: 1.6; }
 .ingredient-form .primary-action:disabled { cursor: not-allowed; opacity: 0.42; }
 
+.profile-form { display: grid; gap: 20px; margin-top: 24px; }
+.profile-form input[type="text"],
+.profile-form input[type="date"] { min-height: 52px; width: 100%; min-width: 0; padding: 0 14px; border: 1px solid var(--line); border-radius: 15px; outline: 0; background: var(--canvas); color: var(--ink); font-size: 16px; }
+.profile-form input:focus { border-color: var(--sage); box-shadow: 0 0 0 3px rgba(110, 132, 107, 0.13); }
+.profile-date-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.readiness-picker { display: grid; gap: 8px; }
+.readiness-picker label { display: grid; min-height: 48px; grid-template-columns: 20px minmax(0, 1fr) 18px; align-items: center; gap: 10px; padding: 0 13px; border: 1px solid var(--line); border-radius: 15px; color: var(--ink-soft); cursor: pointer; }
+.readiness-picker label.is-checked { border-color: rgba(80, 102, 78, 0.48); background: var(--sage-soft); color: var(--sage-deep); font-weight: 700; }
+.readiness-picker input { width: 18px; height: 18px; margin: 0; accent-color: var(--sage-deep); }
+.profile-form p { margin: -2px 0 0; color: var(--ink-soft); font-size: 11px; line-height: 1.65; }
+.profile-form .primary-action:disabled { cursor: not-allowed; opacity: 0.45; }
+
 .time-form { display: grid; gap: 17px; margin-top: 26px; }
 .time-form > label { font-size: 12px; font-weight: 700; }
 .time-input-wrap { display: flex; min-height: 74px; align-items: center; padding: 0 18px; border: 1px solid rgba(80, 102, 78, 0.4); border-radius: 20px; background: var(--sage-soft); color: var(--sage-deep); }
@@ -952,6 +965,9 @@ textarea:focus-visible {
   .calendar-footer { display: grid; justify-items: start; gap: 8px; }
   .calendar-hint { text-align: left; }
   .amount-options { grid-template-columns: repeat(2, 1fr); }
+  .profile-hero { align-items: flex-start; flex-wrap: wrap; }
+  .profile-edit-action { margin-left: 96px; margin-top: -26px; }
+  .profile-date-grid { grid-template-columns: 1fr; }
   .sheet-backdrop { padding: 8px 0 0; }
   .record-sheet { padding-inline: 20px; }
 }

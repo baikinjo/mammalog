@@ -45,6 +45,7 @@ export interface SaveFamilyMealInput {
   plannedTime: string;
   title: string;
   ingredients: IngredientDefinition[];
+  newExposureIngredientId?: string | null;
   completion: FamilyMealCompletion;
   reaction: FamilyMealReaction;
   note: string;
@@ -53,6 +54,30 @@ export interface SaveFamilyMealInput {
   servingGuide: string;
   textureGuide: string;
   recommendationReasons: string[];
+}
+
+export async function saveChildIngredientState(
+  childId: string,
+  state: ChildIngredientState,
+): Promise<void> {
+  const client = getSupabaseClient();
+  const { data: authData, error: authError } = await client.auth.getUser();
+  if (authError) throw authError;
+
+  const { error } = await client.from("child_ingredients").upsert({
+    child_id: childId,
+    ingredient_id: state.ingredientId,
+    status: state.status,
+    test_day: state.testDay,
+    exposure_count: state.exposureCount,
+    first_offered_at: state.firstOfferedAt,
+    last_offered_at: state.lastOfferedAt,
+    accepted_texture_mm: state.acceptedTextureMm ?? [],
+    last_reaction: state.lastReaction,
+    updated_by: authData.user?.id ?? null,
+    updated_at: new Date().toISOString(),
+  }, { onConflict: "child_id,ingredient_id" });
+  if (error) throw error;
 }
 
 export async function sendMagicLink(email: string, redirectTo: string): Promise<void> {
@@ -349,7 +374,9 @@ export async function saveFamilyMealRecord(input: SaveFamilyMealInput): Promise<
       meal_plan_id: plan.id,
       ingredient_id: ingredient.id,
       role: roleForIngredient(ingredient),
-      is_new_exposure: index === 0,
+      is_new_exposure: input.newExposureIngredientId
+        ? ingredient.id === input.newExposureIngredientId
+        : index === 0,
     })),
   );
   if (itemError) throw itemError;

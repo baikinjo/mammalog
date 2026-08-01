@@ -19,20 +19,38 @@ import {
   X,
 } from "lucide-react";
 import {
-  demoHistory,
-  demoIngredientStates,
   demoProfile,
   ingredientDefinitions,
 } from "../lib/demo-data";
-import { createBookBasedDayPlan, createInitialMealSuggestion } from "../lib/recommendation-engine";
-import type { IngredientCategory, IngredientDefinition, IntroductionGroup } from "../lib/domain";
+import { getStageGuide } from "../lib/book-knowledge";
+import {
+  applyTrialOutcome,
+  createBookBasedDayPlan,
+  createInitialMealSuggestion,
+  hasStartReadiness,
+} from "../lib/recommendation-engine";
+import type {
+  BabyProfile,
+  ChildIngredientState,
+  DailyRecommendation,
+  IngredientCategory,
+  IngredientDefinition,
+  IntroductionGroup,
+  MealHistoryEntry,
+  MealSuggestion,
+  ReadinessSignals,
+} from "../lib/domain";
 import {
   createFamilyInvite,
   createFamilyWorkspace,
   ensureDefaultChild,
   joinFamilyWithCode,
   loadFamilyMealRecords,
+  loadRecommendationInputs,
   loadFamilyWorkspace,
+  saveChildIngredientState,
+  saveChildProfile,
+  saveDailyRecommendation,
   saveFamilyMealRecord,
   sendMagicLink,
   signInFamilyAnonymously,
@@ -222,6 +240,27 @@ const settingOptions: Record<ChoiceSettingKey, { title: string; values: string[]
   style: { title: "조리 방식", values: ["바로 조리", "냉동 큐브 활용", "두 방식 함께"] },
 };
 
+const preparationStyleLabels: Record<BabyProfile["preparationStyle"], string> = {
+  cube: "냉동 큐브 활용",
+  fresh: "바로 조리",
+  batch: "한 번에 조리",
+  mixed: "두 방식 함께",
+};
+
+const preparationStyleValues: Record<string, BabyProfile["preparationStyle"]> = {
+  "냉동 큐브 활용": "cube",
+  "바로 조리": "fresh",
+  "한 번에 조리": "batch",
+  "두 방식 함께": "mixed",
+};
+
+const readinessLabels: Record<keyof ReadinessSignals, string> = {
+  tongueThrustGone: "혀로 밀어내는 반사가 줄었어요",
+  headControl: "목을 안정적으로 가눠요",
+  sitsWithSupport: "도움을 받아 앉을 수 있어요",
+  foodInterest: "가족이 먹는 음식에 관심을 보여요",
+};
+
 function IngredientVisual({ ingredient, className = "" }: { ingredient: IngredientDefinition; className?: string }) {
   const src = ingredientAssetPaths[ingredient.assetId ?? ingredient.id];
 
@@ -240,16 +279,49 @@ function BrandMark() {
   );
 }
 
-function TodayPrepare({ onPreview }: { onPreview: () => void }) {
+function recommendationProfile(profile: BabyProfile): BabyProfile {
+  if (profile.stage !== "prestart") return profile;
+  return {
+    ...profile,
+    stage: "initial",
+    ageMonths: Math.max(6, profile.ageMonths),
+    correctedAgeMonths: Math.max(6, profile.correctedAgeMonths ?? profile.ageMonths),
+    mealsPerDay: 1,
+    snacksPerDay: 0,
+  };
+}
+
+function formatProfileStart(profile: BabyProfile): string {
+  if (!profile.weaningStartDate) return "날짜를 정해주세요";
+  const date = parseDateId(profile.weaningStartDate);
+  return `${date.getFullYear()}년 ${date.getMonth() + 1}월 ${date.getDate()}일`;
+}
+
+function preparationCountdown(profile: BabyProfile): string {
+  if (profile.weaningStartDate) {
+    const days = Math.ceil((parseDateId(profile.weaningStartDate).getTime() - new Date().setHours(0, 0, 0, 0)) / 86_400_000);
+    if (days > 0) return `가족이 정한 시작일까지 ${days}일 남았어요.`;
+    if (days === 0) return "가족이 정한 시작일이에요. 준비 신호를 함께 확인해보세요.";
+  }
+  const estimatedWeeks = Math.max(0, Math.round((6 - (profile.correctedAgeMonths ?? profile.ageMonths)) * 4.35));
+  return estimatedWeeks
+    ? `만 6개월까지 약 ${estimatedWeeks}주 남았어요.`
+    : hasStartReadiness(profile)
+      ? "월령과 네 가지 준비 신호를 모두 확인했어요."
+      : "월령과 네 가지 준비 신호를 확인한 뒤 시작해요.";
+}
+
+function TodayPrepare({ profile, onPreview }: { profile: BabyProfile; onPreview: () => void }) {
+  const readinessCount = Object.values(profile.readiness ?? {}).filter(Boolean).length;
   return (
     <>
       <section className="hero-card">
         <div className="hero-kicker">
-          <span>생후 4개월</span>
-          <span className="status-pill">시작 전</span>
+          <span>생후 {profile.ageMonths}개월</span>
+          <span className="status-pill">준비 신호 {readinessCount}/4</span>
         </div>
         <h1>천천히, 첫 한끼를<br />준비하고 있어요</h1>
-        <p>만 6개월 시작까지 약 8주 남았어요.</p>
+        <p>{preparationCountdown(profile)}</p>
         <div className="hero-orbit" aria-hidden="true">
           <span className="orbit-dot orbit-one" />
           <span className="orbit-dot orbit-two" />
@@ -295,32 +367,57 @@ function TodayPrepare({ onPreview }: { onPreview: () => void }) {
 }
 
 function TodayMeal({
+  profile,
+  ingredientStates,
+  mealHistory,
   onBack,
   onRecord,
 }: {
+  profile: BabyProfile;
+  ingredientStates: ChildIngredientState[];
+  mealHistory: MealHistoryEntry[];
   onBack: () => void;
-  onRecord: () => void;
+  onRecord: (ingredientIds: string[]) => void;
 }) {
-  const suggestion = useMemo(
-    () =>
-      createInitialMealSuggestion(
-        demoProfile,
-        ingredientDefinitions,
-        demoIngredientStates,
-        demoHistory,
-      ),
-    [],
-  );
+  const planProfile = useMemo(() => recommendationProfile(profile), [profile]);
   const bookPlan = useMemo(
     () => createBookBasedDayPlan(
-      { ...demoProfile, stage: "initial", ageMonths: 6, correctedAgeMonths: 6, mealsPerDay: 1 },
+      planProfile,
       ingredientDefinitions,
-      demoIngredientStates,
-      demoHistory,
+      ingredientStates,
+      mealHistory,
     ),
-    [],
+    [ingredientStates, mealHistory, planProfile],
+  );
+  const suggestion = useMemo(
+    (): MealSuggestion => {
+      if (profile.stage === "prestart") {
+        return createInitialMealSuggestion(
+          profile,
+          ingredientDefinitions,
+          ingredientStates,
+          mealHistory,
+        );
+      }
+      const meal = bookPlan.meals[0];
+      return {
+        title: meal.title,
+        mealTime: meal.time,
+        servingGuide: meal.servingGuide,
+        textureGuide: meal.textureGuide,
+        ingredients: meal.items.map((item) => item.ingredient),
+        testLabel: bookPlan.currentTrial ? `${bookPlan.currentTrial.name} ${bookPlan.trialDay ?? 1}/3일` : null,
+        reasons: meal.reasons,
+      };
+    },
+    [bookPlan, ingredientStates, mealHistory, profile],
   );
   const [simpleRice, setSimpleRice] = useState(false);
+  const canChooseSimpleRice = suggestion.ingredients.some((ingredient) => ingredient.id === "rice")
+    && suggestion.ingredients.some((ingredient) => ingredient.id === "oatmeal");
+  const visibleIngredients = simpleRice
+    ? suggestion.ingredients.filter((ingredient) => ingredient.id !== "oatmeal")
+    : suggestion.ingredients;
 
   return (
     <>
@@ -331,10 +428,10 @@ function TodayMeal({
       <section className="day-intro">
         <div>
           <span className="overline">오전 {suggestion.mealTime}</span>
-          <h1>이유식 1일차</h1>
-          <p>먹는 양보다 새로운 경험을 시작하는 날이에요.</p>
+          <h1>{bookPlan.currentTrial ? `${bookPlan.currentTrial.name} ${bookPlan.trialDay ?? 1}일차` : `${bookPlan.stageLabel} 오늘 한끼`}</h1>
+          <p>{bookPlan.summaryReasons[0]}</p>
         </div>
-        <div className="day-number" aria-label="첫째 날">01</div>
+        <div className="day-number" aria-label={`${bookPlan.trialDay ?? 1}일차`}>{String(bookPlan.trialDay ?? 1).padStart(2, "0")}</div>
       </section>
 
       <section className="meal-card">
@@ -346,22 +443,21 @@ function TodayMeal({
         </div>
         <div className="meal-card-head">
           <div>
-            <span className="status-pill">{suggestion.testLabel}</span>
+            {suggestion.testLabel && <span className="status-pill">{suggestion.testLabel}</span>}
             <h2>{simpleRice ? "쌀죽" : suggestion.title}</h2>
           </div>
-          <button
-            className="swap-button"
-            type="button"
-            onClick={() => setSimpleRice((value) => !value)}
-          >
-            <RefreshCw size={13} aria-hidden="true" />
-            {simpleRice ? "오트밀 포함" : "쌀만 사용"}
-          </button>
+          {canChooseSimpleRice && (
+            <button className="swap-button" type="button" onClick={() => setSimpleRice((value) => !value)}>
+              <RefreshCw size={13} aria-hidden="true" />
+              {simpleRice ? "오트밀 포함" : "쌀만 사용"}
+            </button>
+          )}
         </div>
 
         <div className="ingredient-chips">
-          <span><IngredientVisual ingredient={ingredientDefinitions[0]} className="is-chip" /> 쌀</span>
-          {!simpleRice && <span><IngredientVisual ingredient={ingredientDefinitions[1]} className="is-chip" /> 오트밀</span>}
+          {visibleIngredients.map((ingredient) => (
+            <span key={ingredient.id}><IngredientVisual ingredient={ingredient} className="is-chip" /> {ingredient.name}</span>
+          ))}
         </div>
 
         <dl className="meal-facts">
@@ -384,7 +480,7 @@ function TodayMeal({
           </ul>
         </details>
 
-        <button className="primary-action" type="button" onClick={onRecord}>
+        <button className="primary-action" type="button" onClick={() => onRecord(visibleIngredients.map((ingredient) => ingredient.id))}>
           식사 기록하기
         </button>
       </section>
@@ -427,16 +523,21 @@ function TodayMeal({
 
 function IngredientsView({
   ingredients,
+  plan,
   onSelect,
   onAdd,
 }: {
   ingredients: IngredientDefinition[];
+  plan: DailyRecommendation;
   onSelect: (ingredient: IngredientDefinition) => void;
   onAdd: () => void;
 }) {
   const [selectedCategory, setSelectedCategory] = useState<IngredientCategory | "all">("all");
-  const rice = ingredients.find((ingredient) => ingredient.id === "rice") ?? ingredients[0];
-  const beef = ingredients.find((ingredient) => ingredient.id === "beef") ?? ingredients[2];
+  const currentTrial = plan.currentTrial ?? ingredients[0];
+  const nextIngredient = ingredients.find(
+    (ingredient) => ingredient.introductionGroup !== currentTrial.introductionGroup
+      && ingredient.introductionPriority > currentTrial.introductionPriority,
+  ) ?? ingredients.find((ingredient) => ingredient.id !== currentTrial.id) ?? currentTrial;
   const visibleIngredients = selectedCategory === "all"
     ? ingredients
     : ingredients.filter((ingredient) => ingredient.category === selectedCategory);
@@ -452,15 +553,15 @@ function IngredientsView({
       </section>
 
       <section className="ingredient-status-grid">
-        <button className="status-card testing-card" type="button" onClick={() => onSelect(rice)}>
-          <span className="status-label">테스트 예정</span>
-          <div className="ingredient-large"><IngredientVisual ingredient={rice} className="is-large" /><strong>쌀</strong></div>
-          <p>시작일 · 1/3일 <ChevronRight size={14} aria-hidden="true" /></p>
+        <button className="status-card testing-card" type="button" onClick={() => onSelect(currentTrial)}>
+          <span className="status-label">{plan.trialDay && plan.trialDay > 1 ? "도입 중" : "테스트 예정"}</span>
+          <div className="ingredient-large"><IngredientVisual ingredient={currentTrial} className="is-large" /><strong>{currentTrial.name}</strong></div>
+          <p>{plan.trialDay ?? 1}/3일 · 기록에 따라 갱신 <ChevronRight size={14} aria-hidden="true" /></p>
         </button>
-        <button className="status-card next-card" type="button" onClick={() => onSelect(beef)}>
+        <button className="status-card next-card" type="button" onClick={() => onSelect(nextIngredient)}>
           <span className="status-label">그다음</span>
-          <div className="ingredient-large"><IngredientVisual ingredient={beef} className="is-large" /><strong>소고기</strong></div>
-          <p>곡류 적응 후 <ChevronRight size={14} aria-hidden="true" /></p>
+          <div className="ingredient-large"><IngredientVisual ingredient={nextIngredient} className="is-large" /><strong>{nextIngredient.name}</strong></div>
+          <p>{introductionGroupLabels[currentTrial.introductionGroup]} 적응 후 <ChevronRight size={14} aria-hidden="true" /></p>
         </button>
       </section>
 
@@ -613,31 +714,37 @@ function RecordsView({
 }
 
 function ProfileView({
+  profile,
   settings,
   onEditSetting,
+  onEditProfile,
   onExport,
   onWorkspaceChange,
 }: {
+  profile: BabyProfile;
   settings: Record<SettingKey, string>;
   onEditSetting: (key: SettingKey) => void;
+  onEditProfile: () => void;
   onExport: () => void;
   onWorkspaceChange: () => void;
 }) {
+  const stageDescription = profile.stage === "prestart" ? "이유식 시작 전" : `${stageLabels[profile.stage]} 진행 중`;
   return (
     <>
       <section className="profile-hero">
         <div className="baby-avatar" aria-hidden="true">아</div>
         <div>
           <span className="overline">우리 가족</span>
-          <h1>우리 아기</h1>
-          <p>생후 4개월 · 이유식 시작 전</p>
+          <h1>{profile.nickname}</h1>
+          <p>생후 {profile.ageMonths}개월 · {stageDescription}</p>
         </div>
+        <button className="profile-edit-action" type="button" onClick={onEditProfile}>정보 수정</button>
       </section>
 
       <section className="section-card profile-settings">
         <div className="setting-row">
           <div><span>예상 시작</span><strong>{settings.start}</strong></div>
-          <button type="button" aria-label="예상 시작일 수정" onClick={() => onEditSetting("start")}><ChevronRight size={19} /></button>
+          <button type="button" aria-label="예상 시작일 수정" onClick={onEditProfile}><ChevronRight size={19} /></button>
         </div>
         <div className="setting-row">
           <div><span>첫 끼 시간</span><strong>{formatKoreanTime(settings.time)}</strong></div>
@@ -1001,6 +1108,93 @@ function AddIngredientSheet({
   );
 }
 
+function BabyProfileSheet({
+  profile,
+  onSave,
+  onClose,
+}: {
+  profile: BabyProfile;
+  onSave: (profile: BabyProfile) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [nickname, setNickname] = useState(profile.nickname);
+  const [birthDate, setBirthDate] = useState(profile.birthDate ?? "");
+  const [weaningStartDate, setWeaningStartDate] = useState(profile.weaningStartDate ?? "");
+  const [readiness, setReadiness] = useState<ReadinessSignals>(profile.readiness ?? {
+    tongueThrustGone: false,
+    headControl: false,
+    sitsWithSupport: false,
+    foodInterest: false,
+  });
+  const [saving, setSaving] = useState(false);
+  const today = toDateId(new Date());
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    dismissMobileKeyboard();
+    setSaving(true);
+    try {
+      await onSave({
+        ...profile,
+        nickname: nickname.trim(),
+        birthDate,
+        weaningStartDate: weaningStartDate || null,
+        readiness,
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="sheet-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="record-sheet compact-sheet" role="dialog" aria-modal="true" aria-labelledby="baby-profile-title" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="sheet-handle" aria-hidden="true" />
+        <div className="sheet-heading">
+          <div><span className="overline">추천의 기준</span><h2 id="baby-profile-title">우리 아이 정보</h2></div>
+          <button className="close-button" type="button" onClick={onClose} aria-label="닫기"><X size={19} /></button>
+        </div>
+        <form className="profile-form" onSubmit={(event) => void submit(event)}>
+          <label className="form-field">
+            <span>화면에 보일 이름</span>
+            <input value={nickname} onChange={(event) => setNickname(event.target.value)} placeholder="우리 아기" autoComplete="off" />
+          </label>
+          <div className="profile-date-grid">
+            <label className="form-field">
+              <span>생년월일</span>
+              <input type="date" max={today} value={birthDate} onChange={(event) => setBirthDate(event.target.value)} />
+            </label>
+            <label className="form-field">
+              <span>예상 또는 실제 시작일</span>
+              <input type="date" min={birthDate || undefined} value={weaningStartDate} onChange={(event) => setWeaningStartDate(event.target.value)} />
+            </label>
+          </div>
+          <fieldset className="form-field">
+            <legend>시작 준비 신호</legend>
+            <div className="readiness-picker">
+              {(Object.keys(readinessLabels) as (keyof ReadinessSignals)[]).map((key) => (
+                <label className={readiness[key] ? "is-checked" : ""} key={key}>
+                  <input
+                    type="checkbox"
+                    checked={readiness[key]}
+                    onChange={(event) => setReadiness((current) => ({ ...current, [key]: event.target.checked }))}
+                  />
+                  <span>{readinessLabels[key]}</span>
+                  {readiness[key] && <Check size={17} aria-hidden="true" />}
+                </label>
+              ))}
+            </div>
+          </fieldset>
+          <p>이 정보와 누적 식사 기록을 함께 보고 다음 재료·끼니·질감을 계산합니다.</p>
+          <button className="primary-action" type="submit" disabled={!nickname.trim() || !birthDate || saving}>
+            {saving ? "가족 공간에 저장 중…" : "아이 정보 저장"}
+          </button>
+        </form>
+      </section>
+    </div>
+  );
+}
+
 function SettingSheet({
   settingKey,
   value,
@@ -1177,6 +1371,7 @@ export function MealApp() {
   const [activeTab, setActiveTab] = useState<Tab>("today");
   const [previewStarted, setPreviewStarted] = useState(false);
   const [recordOpen, setRecordOpen] = useState(false);
+  const [recordIngredientIds, setRecordIngredientIds] = useState<string[] | null>(null);
   const [todayId] = useState(() => toDateId(new Date()));
   const [recordTargetDate, setRecordTargetDate] = useState(() => toDateId(new Date()));
   const [records, setRecords] = useState<FamilyMealRecord[]>([]);
@@ -1187,8 +1382,11 @@ export function MealApp() {
     return { year: today.getFullYear(), month: today.getMonth() };
   });
   const [selectedIngredient, setSelectedIngredient] = useState<IngredientDefinition | null>(null);
+  const [ingredientStates, setIngredientStates] = useState<ChildIngredientState[]>([]);
+  const [mealHistory, setMealHistory] = useState<MealHistoryEntry[]>([]);
   const [customIngredients, setCustomIngredients] = useState<IngredientDefinition[]>([]);
   const [addIngredientOpen, setAddIngredientOpen] = useState(false);
+  const [profileEditorOpen, setProfileEditorOpen] = useState(false);
   const [editingSetting, setEditingSetting] = useState<SettingKey | null>(null);
   const [settings, setSettings] = useState<Record<SettingKey, string>>({
     start: "만 6개월",
@@ -1198,6 +1396,16 @@ export function MealApp() {
   const [toast, setToast] = useState<string | null>(null);
   const allIngredients = useMemo(() => [...ingredientDefinitions, ...customIngredients], [customIngredients]);
   const currentChild = familyWorkspace?.children[0] ?? null;
+  const displayProfile = currentChild ?? demoProfile;
+  const currentPlan = useMemo(
+    () => createBookBasedDayPlan(
+      recommendationProfile(displayProfile),
+      ingredientDefinitions,
+      ingredientStates,
+      mealHistory,
+    ),
+    [displayProfile, ingredientStates, mealHistory],
+  );
   const editingRecord = records.find((record) => record.date === recordTargetDate) ?? null;
 
   const showToast = useCallback((message: string) => {
@@ -1240,6 +1448,8 @@ export function MealApp() {
     if (!data.session?.user) {
       setFamilyWorkspace(null);
       setRecords([]);
+      setIngredientStates([]);
+      setMealHistory([]);
       return;
     }
 
@@ -1251,10 +1461,29 @@ export function MealApp() {
       }
       setFamilyWorkspace(nextWorkspace);
       const child = nextWorkspace?.children[0];
-      setRecords(child ? await loadFamilyMealRecords(child.id) : []);
+      if (!child) {
+        setRecords([]);
+        setIngredientStates([]);
+        setMealHistory([]);
+        return;
+      }
+      const [nextRecords, recommendationInputs] = await Promise.all([
+        loadFamilyMealRecords(child.id),
+        loadRecommendationInputs(child.id),
+      ]);
+      setRecords(nextRecords);
+      setIngredientStates(recommendationInputs.states);
+      setMealHistory(recommendationInputs.history);
+      setSettings({
+        start: formatProfileStart(child),
+        time: child.preferredMealTime,
+        style: preparationStyleLabels[child.preparationStyle],
+      });
     } catch {
       setFamilyWorkspace(null);
       setRecords([]);
+      setIngredientStates([]);
+      setMealHistory([]);
     }
   }, []);
 
@@ -1282,23 +1511,18 @@ export function MealApp() {
   const saveRecord = async (draft: RecordDraft) => {
     if (!currentChild) {
       setRecordOpen(false);
+      setRecordIngredientIds(null);
       setActiveTab("profile");
       showToast("먼저 우리 아이 탭에서 가족 로그인을 연결해주세요.");
       return;
     }
 
-    const planProfile = {
-      ...currentChild,
-      stage: "initial" as const,
-      ageMonths: Math.max(6, currentChild.ageMonths),
-      correctedAgeMonths: Math.max(6, currentChild.correctedAgeMonths ?? currentChild.ageMonths),
-      mealsPerDay: 1,
-    };
+    const planProfile = recommendationProfile(currentChild);
     const plan = createBookBasedDayPlan(
       planProfile,
       ingredientDefinitions,
-      demoIngredientStates,
-      demoHistory,
+      ingredientStates,
+      mealHistory,
       parseDateId(recordTargetDate),
     );
     const meal = plan.meals[0];
@@ -1308,12 +1532,16 @@ export function MealApp() {
     }
 
     try {
+      const chosenIngredientIds = editingRecord?.ingredientIds ?? recordIngredientIds;
+      const chosenIngredients = chosenIngredientIds?.map((id) => ingredientDefinitions.find((ingredient) => ingredient.id === id)).filter((ingredient): ingredient is IngredientDefinition => Boolean(ingredient));
+      const recordedIngredients = chosenIngredients?.length ? chosenIngredients : meal.items.map((item) => item.ingredient);
       await saveFamilyMealRecord({
         childId: currentChild.id,
         date: recordTargetDate,
         plannedTime: meal.time,
         title: meal.title,
-        ingredients: meal.items.map((item) => item.ingredient),
+        ingredients: recordedIngredients,
+        newExposureIngredientId: plan.currentTrial?.id ?? null,
         completion: draft.amount,
         reaction: draft.reaction,
         note: draft.note,
@@ -1323,9 +1551,34 @@ export function MealApp() {
         textureGuide: meal.textureGuide,
         recommendationReasons: meal.reasons,
       });
+      if (!editingRecord && plan.currentTrial) {
+        const outcome = draft.reaction === "needs_review"
+          ? "suspectedReaction"
+          : draft.reaction === "taste_rejection"
+            ? "tasteRejected"
+            : draft.reaction === "texture_difficulty"
+              ? "textureDifficulty"
+              : "accepted";
+        const nextStates = applyTrialOutcome(
+          ingredientStates,
+          plan.currentTrial.id,
+          outcome,
+          new Date().toISOString(),
+          getStageGuide(plan.stage).newFoodIntervalDays[1],
+          draft.note,
+        );
+        const nextState = nextStates.find((state) => state.ingredientId === plan.currentTrial?.id);
+        if (nextState) await saveChildIngredientState(currentChild.id, nextState);
+      }
+      await saveDailyRecommendation(currentChild.id, plan, {
+        profile: planProfile,
+        ingredientStates,
+        recentHistory: mealHistory.slice(-21),
+      }).catch(() => undefined);
       await refreshFamilyData();
       const recordedDay = parseDateId(recordTargetDate);
       setRecordOpen(false);
+      setRecordIngredientIds(null);
       setSelectedDate(recordTargetDate);
       setCalendarCursor({ year: recordedDay.getFullYear(), month: recordedDay.getMonth() });
       showToast("식사 기록을 가족 공간에 저장했어요.");
@@ -1364,20 +1617,63 @@ export function MealApp() {
     setCalendarCursor({ year: today.getFullYear(), month: today.getMonth() });
   };
 
-  const updateSetting = (value: string) => {
+  const updateSetting = async (value: string) => {
     if (!editingSetting) return;
+    const settingKey = editingSetting;
     setSettings((current) => ({ ...current, [editingSetting]: value }));
     setEditingSetting(null);
-    showToast("우리 아이 설정을 바꿨어요.");
+    if (!currentChild || !familyWorkspace) {
+      showToast("가족 연결 후 설정을 함께 저장할 수 있어요.");
+      return;
+    }
+    const updatedProfile: BabyProfile = {
+      ...currentChild,
+      preferredMealTime: settingKey === "time" ? value : currentChild.preferredMealTime,
+      preparationStyle: settingKey === "style"
+        ? preparationStyleValues[value] ?? currentChild.preparationStyle
+        : currentChild.preparationStyle,
+    };
+    try {
+      await saveChildProfile(familyWorkspace.householdId, updatedProfile);
+      await refreshFamilyData();
+      showToast("우리 아이 설정을 가족 공간에 저장했어요.");
+    } catch {
+      showToast("설정을 저장하지 못했어요. 잠시 후 다시 시도해주세요.");
+    }
+  };
+
+  const saveProfile = async (profile: BabyProfile) => {
+    if (!familyWorkspace) {
+      setProfileEditorOpen(false);
+      setActiveTab("profile");
+      showToast("먼저 가족 공간을 연결해주세요.");
+      return;
+    }
+    const startIsPast = profile.weaningStartDate
+      ? parseDateId(profile.weaningStartDate).getTime() <= parseDateId(todayId).getTime()
+      : false;
+    const nextProfile: BabyProfile = {
+      ...profile,
+      stage: profile.stage === "prestart" && startIsPast ? "initial" : profile.stage,
+    };
+    try {
+      await saveChildProfile(familyWorkspace.householdId, nextProfile);
+      await refreshFamilyData();
+      setProfileEditorOpen(false);
+      showToast("아이 정보를 가족 공간에 저장했어요.");
+    } catch {
+      showToast("아이 정보를 저장하지 못했어요. 잠시 후 다시 시도해주세요.");
+    }
   };
 
   const exportData = () => {
     const payload = {
       exportedAt: new Date().toISOString(),
-      child: { nickname: demoProfile.nickname, ageMonths: demoProfile.ageMonths },
+      child: displayProfile,
       settings,
       customIngredients,
       mealRecords: records,
+      ingredientStates,
     };
     const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }));
     const anchor = document.createElement("a");
@@ -1418,13 +1714,19 @@ export function MealApp() {
       <main id="top" className="app-main">
         {activeTab === "today" && (
           previewStarted ? (
-            <TodayMeal onBack={() => setPreviewStarted(false)} onRecord={() => { setRecordTargetDate(todayId); setRecordOpen(true); }} />
+            <TodayMeal
+              profile={displayProfile}
+              ingredientStates={ingredientStates}
+              mealHistory={mealHistory}
+              onBack={() => setPreviewStarted(false)}
+              onRecord={(ingredientIds) => { setRecordIngredientIds(ingredientIds); setRecordTargetDate(todayId); setRecordOpen(true); }}
+            />
           ) : (
-            <TodayPrepare onPreview={() => setPreviewStarted(true)} />
+            <TodayPrepare profile={displayProfile} onPreview={() => setPreviewStarted(true)} />
           )
         )}
         {activeTab === "ingredients" && (
-          <IngredientsView ingredients={allIngredients} onSelect={setSelectedIngredient} onAdd={() => setAddIngredientOpen(true)} />
+          <IngredientsView ingredients={allIngredients} plan={currentPlan} onSelect={setSelectedIngredient} onAdd={() => setAddIngredientOpen(true)} />
         )}
         {activeTab === "records" && (
           <RecordsView
@@ -1436,10 +1738,19 @@ export function MealApp() {
             onSelectDate={setSelectedDate}
             onMoveMonth={moveCalendarMonth}
             onGoToday={goCalendarToday}
-            onEditRecord={(record) => { setRecordTargetDate(record.date); setRecordOpen(true); }}
+            onEditRecord={(record) => { setRecordIngredientIds(record.ingredientIds); setRecordTargetDate(record.date); setRecordOpen(true); }}
           />
         )}
-        {activeTab === "profile" && <ProfileView settings={settings} onEditSetting={setEditingSetting} onExport={exportData} onWorkspaceChange={refreshFamilyData} />}
+        {activeTab === "profile" && (
+          <ProfileView
+            profile={displayProfile}
+            settings={settings}
+            onEditSetting={setEditingSetting}
+            onEditProfile={() => setProfileEditorOpen(true)}
+            onExport={exportData}
+            onWorkspaceChange={refreshFamilyData}
+          />
+        )}
       </main>
 
       <nav className="bottom-nav" aria-label="주요 메뉴">
@@ -1458,12 +1769,16 @@ export function MealApp() {
       </nav>
 
       {recordOpen && (
-        <RecordSheet targetDate={recordTargetDate} initialRecord={editingRecord} onClose={() => setRecordOpen(false)} onSave={saveRecord} />
+        <RecordSheet targetDate={recordTargetDate} initialRecord={editingRecord} onClose={() => { setRecordOpen(false); setRecordIngredientIds(null); }} onSave={saveRecord} />
       )}
 
       {selectedIngredient && <IngredientSheet ingredient={selectedIngredient} onClose={() => setSelectedIngredient(null)} />}
 
       {addIngredientOpen && <AddIngredientSheet onAdd={addIngredient} onClose={() => setAddIngredientOpen(false)} />}
+
+      {profileEditorOpen && (
+        <BabyProfileSheet profile={displayProfile} onSave={saveProfile} onClose={() => setProfileEditorOpen(false)} />
+      )}
 
       {editingSetting === "time" && (
         <TimeSettingSheet value={settings.time} onSave={updateSetting} onClose={() => setEditingSetting(null)} />
