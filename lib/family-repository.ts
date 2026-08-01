@@ -2,6 +2,7 @@ import type {
   BabyProfile,
   ChildIngredientState,
   DailyRecommendation,
+  IngredientDefinition,
   MealHistoryEntry,
 } from "./domain";
 import { getSupabaseClient } from "./supabase-client";
@@ -17,6 +18,41 @@ export interface FamilyWorkspace {
   householdName: string;
   members: FamilyMember[];
   children: BabyProfile[];
+}
+
+export type FamilyMealCompletion = "none" | "taste" | "quarter" | "half" | "most" | "all";
+export type FamilyMealReaction = "none" | "taste_rejection" | "texture_difficulty" | "needs_review";
+
+export interface FamilyMealRecord {
+  id: string;
+  mealPlanId: string;
+  date: string;
+  mealIndex: number;
+  plannedTime: string;
+  title: string;
+  ingredientIds: string[];
+  completion: FamilyMealCompletion;
+  reaction: FamilyMealReaction;
+  note: string;
+  textureMm: number | null;
+  recordedBy: string;
+  recordedAt: string;
+}
+
+export interface SaveFamilyMealInput {
+  childId: string;
+  date: string;
+  plannedTime: string;
+  title: string;
+  ingredients: IngredientDefinition[];
+  completion: FamilyMealCompletion;
+  reaction: FamilyMealReaction;
+  note: string;
+  stage: Exclude<BabyProfile["stage"], "prestart">;
+  textureMm: number;
+  servingGuide: string;
+  textureGuide: string;
+  recommendationReasons: string[];
 }
 
 export async function sendMagicLink(email: string, redirectTo: string): Promise<void> {
@@ -41,7 +77,9 @@ export async function createFamilyWorkspace(
     { household_name: householdName, member_display_name: displayName },
   );
   if (error) throw error;
-  return data as string;
+  const householdId = data as string;
+  await ensureDefaultChild(householdId);
+  return householdId;
 }
 
 export async function createFamilyInvite(householdId: string): Promise<string> {
@@ -90,6 +128,57 @@ export async function loadFamilyWorkspace(): Promise<FamilyWorkspace | null> {
     })),
     children: (children ?? []).map(mapChildRow),
   };
+}
+
+function fourMonthsAgo(): string {
+  const date = new Date();
+  date.setMonth(date.getMonth() - 4);
+  return date.toISOString().slice(0, 10);
+}
+
+export async function ensureDefaultChild(householdId: string): Promise<BabyProfile> {
+  const client = getSupabaseClient();
+  const { data: existing, error } = await client
+    .from("children")
+    .select("*")
+    .eq("household_id", householdId)
+    .order("created_at")
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  if (existing) return mapChildRow(existing);
+
+  const profile: BabyProfile = {
+    id: "demo-child",
+    nickname: "우리 아기",
+    birthDate: fourMonthsAgo(),
+    weaningStartDate: null,
+    stage: "prestart",
+    ageMonths: 4,
+    correctedAgeMonths: null,
+    readiness: {
+      tongueThrustGone: false,
+      headControl: true,
+      sitsWithSupport: false,
+      foodInterest: false,
+    },
+    mealsPerDay: 1,
+    snacksPerDay: 0,
+    preferredMealTime: "10:00",
+    milkMlPerDay: null,
+    textureMm: 0,
+    preparationStyle: "cube",
+    temporaryCondition: "none",
+    skills: {
+      handlesCurrentTexture: false,
+      reachesAndGrasps: false,
+      fingerFood: false,
+      spoonPractice: false,
+      cupPractice: false,
+    },
+  };
+  const childId = await saveChildProfile(householdId, profile);
+  return { ...profile, id: childId };
 }
 
 export async function saveChildProfile(
@@ -175,6 +264,103 @@ export async function saveDailyRecommendation(
     output_snapshot: plan,
   }, { onConflict: "child_id,recommendation_date" });
   if (error) throw error;
+}
+
+export async function loadFamilyMealRecords(childId: string): Promise<FamilyMealRecord[]> {
+  const { data, error } = await getSupabaseClient()
+    .from("meal_plans")
+    .select("id,meal_date,meal_index,planned_time,title,texture_mm,meal_plan_items(ingredient_id),meal_logs(id,completion,reaction,note,recorded_by,recorded_at)")
+    .eq("child_id", childId)
+    .eq("status", "completed")
+    .order("meal_date", { ascending: false });
+  if (error) throw error;
+
+  return (data ?? []).flatMap((plan: any) => {
+    const log = Array.isArray(plan.meal_logs) ? plan.meal_logs[0] : plan.meal_logs;
+    if (!log) return [];
+    return [{
+      id: log.id,
+      mealPlanId: plan.id,
+      date: plan.meal_date,
+      mealIndex: plan.meal_index,
+      plannedTime: String(plan.planned_time).slice(0, 5),
+      title: plan.title,
+      ingredientIds: (plan.meal_plan_items ?? []).map((item: any) => item.ingredient_id),
+      completion: log.completion,
+      reaction: log.reaction,
+      note: log.note ?? "",
+      textureMm: plan.texture_mm,
+      recordedBy: log.recorded_by,
+      recordedAt: log.recorded_at,
+    } satisfies FamilyMealRecord];
+  });
+}
+
+function roleForIngredient(ingredient: IngredientDefinition): string {
+  if (ingredient.category === "grain") return "base";
+  if (["meat", "fish", "egg", "beans"].includes(ingredient.category)) return "protein";
+  if (ingredient.category === "fruit") return "fruit";
+  if (ingredient.category === "vegetable") return "vegetable";
+  return "ingredient";
+}
+
+export async function saveFamilyMealRecord(input: SaveFamilyMealInput): Promise<void> {
+  const client = getSupabaseClient();
+  const { data: authData, error: authError } = await client.auth.getUser();
+  if (authError) throw authError;
+  if (!authData.user) throw new Error("로그인이 필요해요.");
+
+  const { data: plan, error: planError } = await client
+    .from("meal_plans")
+    .upsert({
+      child_id: input.childId,
+      meal_date: input.date,
+      meal_index: 1,
+      planned_time: input.plannedTime,
+      title: input.title,
+      serving_guide: input.servingGuide,
+      texture_guide: input.textureGuide,
+      status: "completed",
+      recommendation_version: "book-engine-v2",
+      recommendation_reasons: input.recommendationReasons,
+      stage: input.stage,
+      texture_mm: input.textureMm,
+      serving_mode: "mixed",
+      locked_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "child_id,meal_date,meal_index" })
+    .select("id")
+    .single();
+  if (planError) throw planError;
+
+  const { error: deleteItemError } = await client
+    .from("meal_plan_items")
+    .delete()
+    .eq("meal_plan_id", plan.id);
+  if (deleteItemError) throw deleteItemError;
+
+  const { error: itemError } = await client.from("meal_plan_items").insert(
+    input.ingredients.map((ingredient, index) => ({
+      meal_plan_id: plan.id,
+      ingredient_id: ingredient.id,
+      role: roleForIngredient(ingredient),
+      is_new_exposure: index === 0,
+    })),
+  );
+  if (itemError) throw itemError;
+
+  const now = new Date().toISOString();
+  const { error: logError } = await client.from("meal_logs").upsert({
+    meal_plan_id: plan.id,
+    completion: input.completion,
+    reaction: input.reaction,
+    note: input.note.trim() || null,
+    recorded_by: authData.user.id,
+    recorded_at: now,
+    texture_mm: input.textureMm,
+    updated_at: now,
+  }, { onConflict: "meal_plan_id" });
+  if (logError) throw logError;
 }
 
 function mapChildRow(row: any): BabyProfile {

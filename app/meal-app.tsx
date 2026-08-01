@@ -29,10 +29,15 @@ import type { IngredientCategory, IngredientDefinition, IntroductionGroup } from
 import {
   createFamilyInvite,
   createFamilyWorkspace,
+  ensureDefaultChild,
   joinFamilyWithCode,
+  loadFamilyMealRecords,
   loadFamilyWorkspace,
+  saveFamilyMealRecord,
   sendMagicLink,
   signOutFamily,
+  type FamilyMealReaction,
+  type FamilyMealRecord,
   type FamilyWorkspace,
 } from "../lib/family-repository";
 import { getSupabaseClient, isSupabaseConfigured } from "../lib/supabase-client";
@@ -41,6 +46,7 @@ type Tab = "today" | "ingredients" | "records" | "profile";
 type Amount = "taste" | "quarter" | "half" | "most";
 type SettingKey = "start" | "time" | "style";
 type ChoiceSettingKey = Exclude<SettingKey, "time">;
+type RecordDraft = { amount: Amount; reaction: FamilyMealReaction; note: string };
 
 type CalendarDay = {
   id: string;
@@ -55,6 +61,22 @@ const amountLabels: Record<Amount, string> = {
   quarter: "조금",
   half: "절반",
   most: "대부분",
+};
+
+const completionLabels: Record<FamilyMealRecord["completion"], string> = {
+  none: "먹지 않음",
+  taste: "맛만 봄",
+  quarter: "조금",
+  half: "절반",
+  most: "대부분",
+  all: "모두 먹음",
+};
+
+const reactionLabels: Record<FamilyMealReaction, string> = {
+  none: "특별한 반응 없음",
+  taste_rejection: "맛을 거부함",
+  texture_difficulty: "질감이 어려웠음",
+  needs_review: "확인 필요",
 };
 
 const weekdayLabels = ["일", "월", "화", "수", "목", "금", "토"];
@@ -447,8 +469,8 @@ function IngredientsView({
 }
 
 function RecordsView({
-  recordDate,
-  amount,
+  records,
+  workspace,
   selectedDate,
   todayId,
   calendarCursor,
@@ -457,20 +479,24 @@ function RecordsView({
   onGoToday,
   onEditRecord,
 }: {
-  recordDate: string | null;
-  amount: Amount;
+  records: FamilyMealRecord[];
+  workspace: FamilyWorkspace | null;
   selectedDate: string;
   todayId: string;
   calendarCursor: CalendarCursor;
   onSelectDate: (date: string) => void;
   onMoveMonth: (direction: -1 | 1) => void;
   onGoToday: () => void;
-  onEditRecord: () => void;
+  onEditRecord: (record: FamilyMealRecord) => void;
 }) {
   const monthDays = useMemo(() => createMonthDays(calendarCursor), [calendarCursor]);
   const firstDayOffset = new Date(calendarCursor.year, calendarCursor.month, 1).getDay();
-  const selectedHasRecord = recordDate === selectedDate;
+  const selectedRecord = records.find((record) => record.date === selectedDate) ?? null;
+  const recordDates = useMemo(() => new Set(records.map((record) => record.date)), [records]);
   const selectedLabel = formatKoreanDate(selectedDate);
+  const recordAuthor = selectedRecord
+    ? workspace?.members.find((member) => member.userId === selectedRecord.recordedBy)?.displayName ?? "가족"
+    : null;
 
   return (
     <>
@@ -503,7 +529,7 @@ function RecordsView({
         <div className="month-grid" aria-label={`${calendarCursor.year}년 ${calendarCursor.month + 1}월 날짜 선택`}>
           {Array.from({ length: firstDayOffset }, (_, index) => <span className="calendar-blank" key={`blank-${index}`} />)}
           {monthDays.map((day) => {
-            const hasRecord = recordDate === day.id;
+            const hasRecord = recordDates.has(day.id);
             return (
               <button
                 className={`calendar-day ${hasRecord ? "has-record" : ""} ${selectedDate === day.id ? "is-selected" : ""} ${todayId === day.id ? "is-today" : ""}`}
@@ -528,23 +554,23 @@ function RecordsView({
         <div className="section-heading">
           <div>
             <span className="overline">{selectedLabel}</span>
-            <h2>{selectedHasRecord ? "첫 식사를 기록했어요" : "이날의 기록이 없어요"}</h2>
+            <h2>{selectedRecord ? "식사를 기록했어요" : "이날의 기록이 없어요"}</h2>
           </div>
         </div>
-        {selectedHasRecord ? (
-          <button className="saved-record" type="button" onClick={onEditRecord}>
-            <div className="saved-date"><strong>01</strong><span>1일차</span></div>
+        {selectedRecord ? (
+          <button className="saved-record" type="button" onClick={() => onEditRecord(selectedRecord)}>
+            <div className="saved-date"><strong>{String(selectedRecord.mealIndex).padStart(2, "0")}</strong><span>{formatKoreanTime(selectedRecord.plannedTime)}</span></div>
             <div>
-              <strong>쌀·오트밀죽</strong>
-              <p>{amountLabels[amount]} · 특별한 반응 없음</p>
-              <span className="record-author">엄마와 동기화됨</span>
+              <strong>{selectedRecord.title}</strong>
+              <p>{completionLabels[selectedRecord.completion]} · {reactionLabels[selectedRecord.reaction]}</p>
+              <span className="record-author">{recordAuthor} 기록 · 가족과 동기화됨</span>
             </div>
             <ChevronRight size={18} aria-hidden="true" />
           </button>
         ) : (
           <div className="empty-state">
             <span aria-hidden="true">◌</span>
-            <p>{recordDate ? "달력에서 기록 표시가 있는 날짜를 눌러 확인할 수 있어요." : "이유식을 시작하면 섭취량, 반응, 질감 기록이 이곳에 쌓입니다."}</p>
+            <p>{records.length ? "달력에서 기록 표시가 있는 날짜를 눌러 확인할 수 있어요." : "이유식을 시작하면 섭취량, 반응, 질감 기록이 이곳에 쌓입니다."}</p>
           </div>
         )}
       </section>
@@ -556,10 +582,12 @@ function ProfileView({
   settings,
   onEditSetting,
   onExport,
+  onWorkspaceChange,
 }: {
   settings: Record<SettingKey, string>;
   onEditSetting: (key: SettingKey) => void;
   onExport: () => void;
+  onWorkspaceChange: () => void;
 }) {
   return (
     <>
@@ -587,14 +615,14 @@ function ProfileView({
         </div>
       </section>
 
-      <FamilySyncSection />
+      <FamilySyncSection onWorkspaceChange={onWorkspaceChange} />
 
       <button className="export-button" type="button" onClick={onExport}><Download size={17} aria-hidden="true" /> 내 데이터 내보내기</button>
     </>
   );
 }
 
-function FamilySyncSection() {
+function FamilySyncSection({ onWorkspaceChange }: { onWorkspaceChange: () => void }) {
   const configured = isSupabaseConfigured();
   const [email, setEmail] = useState("");
   const [userEmail, setUserEmail] = useState<string | null>(null);
@@ -610,13 +638,15 @@ function FamilySyncSection() {
   const refreshWorkspace = useCallback(async () => {
     try {
       setNeedsDatabase(false);
-      setWorkspace(await loadFamilyWorkspace());
+      const nextWorkspace = await loadFamilyWorkspace();
+      setWorkspace(nextWorkspace);
+      onWorkspaceChange();
     } catch (error) {
       const description = error instanceof Error ? error.message : String(error);
       setNeedsDatabase(/relation|schema cache|household_members/i.test(description));
       setWorkspace(null);
     }
-  }, []);
+  }, [onWorkspaceChange]);
 
   useEffect(() => {
     if (!configured) return;
@@ -635,13 +665,16 @@ function FamilySyncSection() {
       setUserEmail(nextEmail);
       setLoading(false);
       if (nextEmail) window.setTimeout(() => void refreshWorkspace(), 0);
-      else setWorkspace(null);
+      else {
+        setWorkspace(null);
+        onWorkspaceChange();
+      }
     });
     return () => {
       active = false;
       data.subscription.unsubscribe();
     };
-  }, [configured, refreshWorkspace]);
+  }, [configured, onWorkspaceChange, refreshWorkspace]);
 
   const requestLogin = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -983,17 +1016,32 @@ function TimeSettingSheet({
 }
 
 function RecordSheet({
-  amount,
-  setAmount,
+  targetDate,
+  initialRecord,
   onClose,
   onSave,
 }: {
-  amount: Amount;
-  setAmount: (amount: Amount) => void;
+  targetDate: string;
+  initialRecord: FamilyMealRecord | null;
   onClose: () => void;
-  onSave: () => void;
+  onSave: (draft: RecordDraft) => Promise<void>;
 }) {
-  const [reaction, setReaction] = useState("none");
+  const initialAmount: Amount = initialRecord && ["taste", "quarter", "half", "most"].includes(initialRecord.completion)
+    ? initialRecord.completion as Amount
+    : "quarter";
+  const [amount, setAmount] = useState<Amount>(initialAmount);
+  const [reaction, setReaction] = useState<FamilyMealReaction>(initialRecord?.reaction ?? "none");
+  const [note, setNote] = useState(initialRecord?.note ?? "");
+  const [saving, setSaving] = useState(false);
+
+  const submitRecord = async () => {
+    setSaving(true);
+    try {
+      await onSave({ amount, reaction, note });
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <div className="sheet-backdrop" role="presentation" onMouseDown={onClose}>
@@ -1007,8 +1055,8 @@ function RecordSheet({
         <div className="sheet-handle" aria-hidden="true" />
         <div className="sheet-heading">
           <div>
-            <span className="overline">오전 10:00</span>
-            <h2 id="record-title">첫 식사는 어땠나요?</h2>
+            <span className="overline">{formatKoreanDate(targetDate)} · 오전 10:00</span>
+            <h2 id="record-title">{initialRecord ? "식사 기록을 수정할까요?" : "첫 식사는 어땠나요?"}</h2>
           </div>
           <button className="close-button" type="button" onClick={onClose} aria-label="닫기"><X size={19} /></button>
         </div>
@@ -1036,9 +1084,9 @@ function RecordSheet({
           <div className="reaction-options">
             {[
               ["none", "없었어요"],
-              ["taste", "맛을 거부했어요"],
-              ["texture", "질감이 어려웠어요"],
-              ["check", "확인이 필요해요"],
+              ["taste_rejection", "맛을 거부했어요"],
+              ["texture_difficulty", "질감이 어려웠어요"],
+              ["needs_review", "확인이 필요해요"],
             ].map(([value, label]) => (
               <label key={value}>
                 <input
@@ -1046,7 +1094,7 @@ function RecordSheet({
                   name="reaction"
                   value={value}
                   checked={reaction === value}
-                  onChange={() => setReaction(value)}
+                  onChange={() => setReaction(value as FamilyMealReaction)}
                 />
                 <span>{label}</span>
               </label>
@@ -1056,10 +1104,10 @@ function RecordSheet({
 
         <label className="note-field">
           <span>함께 볼 메모</span>
-          <textarea placeholder="첫 숟가락은 밀어냈지만 두 번째는 삼켰어요." rows={3} />
+          <textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="첫 숟가락은 밀어냈지만 두 번째는 삼켰어요." rows={3} />
         </label>
 
-        <button className="primary-action" type="button" onClick={onSave}>기록 저장</button>
+        <button className="primary-action" type="button" onClick={() => void submitRecord()} disabled={saving}>{saving ? "가족 기록에 저장 중…" : initialRecord ? "수정 내용 저장" : "기록 저장"}</button>
       </section>
     </div>
   );
@@ -1069,9 +1117,10 @@ export function MealApp() {
   const [activeTab, setActiveTab] = useState<Tab>("today");
   const [previewStarted, setPreviewStarted] = useState(false);
   const [recordOpen, setRecordOpen] = useState(false);
-  const [recordDate, setRecordDate] = useState<string | null>(null);
-  const [amount, setAmount] = useState<Amount>("quarter");
   const [todayId] = useState(() => toDateId(new Date()));
+  const [recordTargetDate, setRecordTargetDate] = useState(() => toDateId(new Date()));
+  const [records, setRecords] = useState<FamilyMealRecord[]>([]);
+  const [familyWorkspace, setFamilyWorkspace] = useState<FamilyWorkspace | null>(null);
   const [selectedDate, setSelectedDate] = useState(() => toDateId(new Date()));
   const [calendarCursor, setCalendarCursor] = useState<CalendarCursor>(() => {
     const today = new Date();
@@ -1088,19 +1137,113 @@ export function MealApp() {
   });
   const [toast, setToast] = useState<string | null>(null);
   const allIngredients = useMemo(() => [...ingredientDefinitions, ...customIngredients], [customIngredients]);
+  const currentChild = familyWorkspace?.children[0] ?? null;
+  const editingRecord = records.find((record) => record.date === recordTargetDate) ?? null;
 
-  const showToast = (message: string) => {
+  const showToast = useCallback((message: string) => {
     setToast(message);
     window.setTimeout(() => setToast(null), 2600);
-  };
+  }, []);
 
-  const saveRecord = () => {
-    const today = parseDateId(todayId);
-    setRecordDate(todayId);
-    setRecordOpen(false);
-    setSelectedDate(todayId);
-    setCalendarCursor({ year: today.getFullYear(), month: today.getMonth() });
-    showToast("식사 기록을 가족과 동기화할 준비가 됐어요.");
+  const refreshFamilyData = useCallback(async () => {
+    if (!isSupabaseConfigured()) return;
+    const client = getSupabaseClient();
+    const { data } = await client.auth.getSession();
+    if (!data.session?.user) {
+      setFamilyWorkspace(null);
+      setRecords([]);
+      return;
+    }
+
+    try {
+      let nextWorkspace = await loadFamilyWorkspace();
+      if (nextWorkspace && !nextWorkspace.children.length) {
+        await ensureDefaultChild(nextWorkspace.householdId);
+        nextWorkspace = await loadFamilyWorkspace();
+      }
+      setFamilyWorkspace(nextWorkspace);
+      const child = nextWorkspace?.children[0];
+      setRecords(child ? await loadFamilyMealRecords(child.id) : []);
+    } catch {
+      setFamilyWorkspace(null);
+      setRecords([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured()) return;
+    void refreshFamilyData();
+    const client = getSupabaseClient();
+    const { data } = client.auth.onAuthStateChange(() => {
+      window.setTimeout(() => void refreshFamilyData(), 0);
+    });
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") void refreshFamilyData();
+    };
+    window.addEventListener("focus", refreshWhenVisible);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    const interval = window.setInterval(() => void refreshFamilyData(), 30_000);
+    return () => {
+      data.subscription.unsubscribe();
+      window.removeEventListener("focus", refreshWhenVisible);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+      window.clearInterval(interval);
+    };
+  }, [refreshFamilyData]);
+
+  const saveRecord = async (draft: RecordDraft) => {
+    if (!currentChild) {
+      setRecordOpen(false);
+      setActiveTab("profile");
+      showToast("먼저 우리 아이 탭에서 가족 로그인을 연결해주세요.");
+      return;
+    }
+
+    const planProfile = {
+      ...currentChild,
+      stage: "initial" as const,
+      ageMonths: Math.max(6, currentChild.ageMonths),
+      correctedAgeMonths: Math.max(6, currentChild.correctedAgeMonths ?? currentChild.ageMonths),
+      mealsPerDay: 1,
+    };
+    const plan = createBookBasedDayPlan(
+      planProfile,
+      ingredientDefinitions,
+      demoIngredientStates,
+      demoHistory,
+      parseDateId(recordTargetDate),
+    );
+    const meal = plan.meals[0];
+    if (!meal) {
+      showToast("오늘 기록할 추천 식사를 만들지 못했어요.");
+      return;
+    }
+
+    try {
+      await saveFamilyMealRecord({
+        childId: currentChild.id,
+        date: recordTargetDate,
+        plannedTime: meal.time,
+        title: meal.title,
+        ingredients: meal.items.map((item) => item.ingredient),
+        completion: draft.amount,
+        reaction: draft.reaction,
+        note: draft.note,
+        stage: plan.stage,
+        textureMm: currentChild.textureMm || 1,
+        servingGuide: meal.servingGuide,
+        textureGuide: meal.textureGuide,
+        recommendationReasons: meal.reasons,
+      });
+      await refreshFamilyData();
+      const recordedDay = parseDateId(recordTargetDate);
+      setRecordOpen(false);
+      setSelectedDate(recordTargetDate);
+      setCalendarCursor({ year: recordedDay.getFullYear(), month: recordedDay.getMonth() });
+      showToast("식사 기록을 가족 공간에 저장했어요.");
+    } catch {
+      showToast("기록을 저장하지 못했어요. 잠시 후 다시 시도해주세요.");
+    }
   };
 
   const addIngredient = (name: string, category: IngredientCategory, assetId: string) => {
@@ -1146,7 +1289,7 @@ export function MealApp() {
       child: { nickname: demoProfile.nickname, ageMonths: demoProfile.ageMonths },
       settings,
       customIngredients,
-      firstMeal: recordDate ? { date: recordDate, amount: amountLabels[amount] } : null,
+      mealRecords: records,
     };
     const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }));
     const anchor = document.createElement("a");
@@ -1187,7 +1330,7 @@ export function MealApp() {
       <main id="top" className="app-main">
         {activeTab === "today" && (
           previewStarted ? (
-            <TodayMeal onBack={() => setPreviewStarted(false)} onRecord={() => setRecordOpen(true)} />
+            <TodayMeal onBack={() => setPreviewStarted(false)} onRecord={() => { setRecordTargetDate(todayId); setRecordOpen(true); }} />
           ) : (
             <TodayPrepare onPreview={() => setPreviewStarted(true)} />
           )
@@ -1197,18 +1340,18 @@ export function MealApp() {
         )}
         {activeTab === "records" && (
           <RecordsView
-            recordDate={recordDate}
-            amount={amount}
+            records={records}
+            workspace={familyWorkspace}
             selectedDate={selectedDate}
             todayId={todayId}
             calendarCursor={calendarCursor}
             onSelectDate={setSelectedDate}
             onMoveMonth={moveCalendarMonth}
             onGoToday={goCalendarToday}
-            onEditRecord={() => setRecordOpen(true)}
+            onEditRecord={(record) => { setRecordTargetDate(record.date); setRecordOpen(true); }}
           />
         )}
-        {activeTab === "profile" && <ProfileView settings={settings} onEditSetting={setEditingSetting} onExport={exportData} />}
+        {activeTab === "profile" && <ProfileView settings={settings} onEditSetting={setEditingSetting} onExport={exportData} onWorkspaceChange={refreshFamilyData} />}
       </main>
 
       <nav className="bottom-nav" aria-label="주요 메뉴">
@@ -1227,7 +1370,7 @@ export function MealApp() {
       </nav>
 
       {recordOpen && (
-        <RecordSheet amount={amount} setAmount={setAmount} onClose={() => setRecordOpen(false)} onSave={saveRecord} />
+        <RecordSheet targetDate={recordTargetDate} initialRecord={editingRecord} onClose={() => setRecordOpen(false)} onSave={saveRecord} />
       )}
 
       {selectedIngredient && <IngredientSheet ingredient={selectedIngredient} onClose={() => setSelectedIngredient(null)} />}
