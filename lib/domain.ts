@@ -205,6 +205,7 @@ export interface PlannedMeal {
   preparationSteps: string[];
   storageGuide: string;
   reasons: string[];
+  bookReference?: string;
 }
 
 export interface DailyRoutineLog {

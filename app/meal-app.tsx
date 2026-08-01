@@ -258,6 +258,13 @@ const stageLabels = {
   completion: "완료기",
 };
 
+const ingredientStageRank: Record<Exclude<WeaningStage, "prestart">, number> = {
+  initial: 1,
+  middle: 2,
+  late: 3,
+  completion: 4,
+};
+
 function toDateId(date: Date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -740,6 +747,7 @@ function TodayMeal({
           <ol>
             {focusedMeal.preparationSteps.map((step) => <li key={step}>{step}</li>)}
           </ol>
+          {focusedMeal.bookReference && <p className="book-reference"><strong>책 메뉴</strong> {focusedMeal.bookReference}</p>}
           <p><strong>보관</strong> {focusedMeal.storageGuide}</p>
         </details>
 
@@ -859,6 +867,7 @@ function IngredientsView({
   onAdd: () => void;
 }) {
   const [selectedCategory, setSelectedCategory] = useState<IngredientCategory | "all">("all");
+  const [selectedAvailability, setSelectedAvailability] = useState<"current" | "later" | "all">("current");
   const stateByIngredient = useMemo(
     () => new Map(ingredientStates.map((state) => [state.ingredientId, state])),
     [ingredientStates],
@@ -868,9 +877,14 @@ function IngredientsView({
     (ingredient) => ingredient.introductionGroup !== currentTrial.introductionGroup
       && ingredient.introductionPriority > currentTrial.introductionPriority,
   ) ?? ingredients.find((ingredient) => ingredient.id !== currentTrial.id) ?? currentTrial;
-  const visibleIngredients = selectedCategory === "all"
-    ? ingredients
-    : ingredients.filter((ingredient) => ingredient.category === selectedCategory);
+  const currentStageRank = ingredientStageRank[plan.stage];
+  const visibleIngredients = ingredients.filter((ingredient) => {
+    const categoryMatches = selectedCategory === "all" || ingredient.category === selectedCategory;
+    const isAvailable = ingredientStageRank[ingredient.minimumStage] <= currentStageRank;
+    const availabilityMatches = selectedAvailability === "all"
+      || (selectedAvailability === "current" ? isAvailable : !isAvailable);
+    return categoryMatches && availabilityMatches;
+  });
 
   return (
     <>
@@ -898,12 +912,17 @@ function IngredientsView({
       <section className="section-card">
         <div className="section-heading">
           <div>
-            <span className="overline">책 전체 범위</span>
+            <span className="overline">6–18개월 전체 흐름</span>
             <h2>재료 원장</h2>
           </div>
           <span className="count-badge">{visibleIngredients.length}개</span>
         </div>
-        <p className="catalog-note">도입 우선순위와 월령·빈도·조리 안전 규칙을 함께 저장한 목록이에요.</p>
+        <p className="catalog-note">61개는 앱이 책을 바탕으로 정리한 기본 재료 목록이에요. 후기·완료기에 재료가 끝나는 것이 아니라, 먹어본 재료를 죽 → 무른밥 → 밥·국·반찬 메뉴로 발전시켜 사용해요.</p>
+        <div className="ingredient-filters availability-filters" aria-label="재료 사용 시기 필터">
+          <button className={selectedAvailability === "current" ? "is-selected" : ""} type="button" onClick={() => setSelectedAvailability("current")}>현재 단계에서 사용</button>
+          <button className={selectedAvailability === "later" ? "is-selected" : ""} type="button" onClick={() => setSelectedAvailability("later")}>나중에 열림</button>
+          <button className={selectedAvailability === "all" ? "is-selected" : ""} type="button" onClick={() => setSelectedAvailability("all")}>전체 보기</button>
+        </div>
         <div className="ingredient-filters" aria-label="재료 식품군 필터">
           <button className={selectedCategory === "all" ? "is-selected" : ""} type="button" onClick={() => setSelectedCategory("all")}>전체</button>
           {categoryOrder.map((category) => (

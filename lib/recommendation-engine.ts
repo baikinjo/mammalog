@@ -3,6 +3,11 @@ import {
   conditionGuidance,
   getStageGuide,
 } from "./book-knowledge";
+import {
+  menuInstruction,
+  menusForStage,
+  type StageMenuTemplate,
+} from "./stage-menu-catalog";
 import type {
   BabyProfile,
   ChildIngredientState,
@@ -370,6 +375,51 @@ function uniqueIngredients(items: Array<IngredientDefinition | null>): Ingredien
   });
 }
 
+function ingredientHistoryIndex(history: MealHistoryEntry[]): Map<string, number> {
+  const lastIndex = new Map<string, number>();
+  history.forEach((entry, index) => {
+    entry.ingredientIds.forEach((id) => lastIndex.set(id, index));
+  });
+  return lastIndex;
+}
+
+function selectStageMenu(
+  stage: Exclude<WeaningStage, "prestart">,
+  available: IngredientDefinition[],
+  history: MealHistoryEntry[],
+  today: Date,
+  mealIndex: number,
+  requireRedMeat: boolean,
+  excludedMenuIds: Set<string>,
+): StageMenuTemplate | null {
+  if (stage === "initial") return null;
+  const availableById = new Map(available.map((ingredient) => [ingredient.id, ingredient]));
+  const lastIndex = ingredientHistoryIndex(history);
+  const daySeed = Number(isoDate(today).replaceAll("-", ""));
+  const candidates = menusForStage(stage)
+    .filter((template) => template.kind !== "snack")
+    .filter((template) => template.ingredientIds.every((id) => availableById.has(id)))
+    .map((template) => {
+      const ingredients = template.ingredientIds.map((id) => availableById.get(id)!);
+      const hasRedMeat = ingredients.some((ingredient) => ingredient.foodGroup === "redMeat");
+      const recency = ingredients.reduce((sum, ingredient) => sum + (lastIndex.get(ingredient.id) ?? -1), 0);
+      const varietyBonus = excludedMenuIds.has(template.id) ? -5_000 : 0;
+      const meatBonus = requireRedMeat && hasRedMeat ? 2_000 : 0;
+      const stableRotation = (daySeed + mealIndex * 17 + template.id.length) % 31;
+      return { template, score: meatBonus + varietyBonus - recency + stableRotation };
+    })
+    .sort((left, right) => right.score - left.score || left.template.id.localeCompare(right.template.id));
+  return candidates[0]?.template ?? null;
+}
+
+function templateIngredients(
+  template: StageMenuTemplate,
+  available: IngredientDefinition[],
+): IngredientDefinition[] {
+  const byId = new Map(available.map((ingredient) => [ingredient.id, ingredient]));
+  return template.ingredientIds.map((id) => byId.get(id)).filter((item): item is IngredientDefinition => Boolean(item));
+}
+
 function textureForDay(
   profile: BabyProfile,
   history: MealHistoryEntry[],
@@ -447,21 +497,29 @@ function makeMeal(
   textureMm: number,
   reasons: string[],
   preparationStyle: BabyProfile["preparationStyle"],
+  template: StageMenuTemplate | null = null,
 ): PlannedMeal {
   const guide = getStageGuide(stage);
-  const servingMode = guide.servingModes[(index - 1) % guide.servingModes.length];
+  const servingMode = template?.servingMode ?? guide.servingModes[(index - 1) % guide.servingModes.length];
+  const newIngredient = ingredients.find((item) => item.id === newIngredientId);
+  const title = template
+    ? `${template.title}${newIngredient && !template.ingredientIds.includes(newIngredient.id) ? ` + ${newIngredient.name} 도입` : ""}`
+    : mealTitle(stage, ingredients);
+  const preparationSteps = preparationForMeal(stage, ingredients, servingMode, textureMm, newIngredientId);
+  if (template) preparationSteps.unshift(menuInstruction(template.kind, textureMm));
   return {
     index,
     type: "meal",
     time,
-    title: mealTitle(stage, ingredients),
+    title,
     items: ingredients.map((item) => itemFor(item, newIngredientId)),
     servingGuide: `${guide.offerGramsRange[0]}~${guide.offerGramsRange[1]}g 범위에서 아이가 먹는 만큼`,
     textureGuide: `${textureMm}mm 안팎 · ${guide.textureDescription}`,
     servingMode,
-    preparationSteps: preparationForMeal(stage, ingredients, servingMode, textureMm, newIngredientId),
+    preparationSteps,
     storageGuide: storageForProfile(preparationStyle),
     reasons,
+    bookReference: template?.sourcePage,
   };
 }
 
@@ -544,6 +602,7 @@ export function createBookBasedDayPlan(
   const fishCount = countRecentFish(definitions, history, today);
   const newId = currentTrial?.id ?? null;
   const meals: PlannedMeal[] = [];
+  const selectedMenuIds = new Set<string>();
 
   for (let index = 1; index <= mealCount; index += 1) {
     const fishMealsAlreadyPlanned = meals.filter(
@@ -552,13 +611,26 @@ export function createBookBasedDayPlan(
     const availableProteins = proteins.filter(
       (item) => item.foodGroup !== "fish" || fishCount + fishMealsAlreadyPlanned < (item.frequencyCap7Days ?? 2),
     );
-    const selected = uniqueIngredients([
-      chooseLeastRecent(grains, history, index - 1),
-      chooseLeastRecent(index === 1 ? redMeats : availableProteins, history, index - 1),
-      chooseLeastRecent(leafy, history, index - 1),
-      chooseLeastRecent(yellow, history, index - 1),
-      stage === "initial" ? null : chooseLeastRecent(otherVegetables, history, index - 1),
-    ]);
+    const fishAllowed = fishCount + fishMealsAlreadyPlanned < 2;
+    const templatePool = fishAllowed ? passed : passed.filter((item) => item.foodGroup !== "fish");
+    const requireRedMeat = index === 1 && redMeats.length > 0;
+    const template = selectStageMenu(stage, templatePool, history, today, index, requireRedMeat, selectedMenuIds);
+    if (template) selectedMenuIds.add(template.id);
+    const templateItems = template ? templateIngredients(template, templatePool) : [];
+    const selected = template
+      ? uniqueIngredients([
+          ...templateItems,
+          templateItems.some((item) => ["grain", "starchyFood"].includes(item.foodGroup ?? ""))
+            ? null
+            : chooseLeastRecent(grains, history, index - 1),
+        ])
+      : uniqueIngredients([
+          chooseLeastRecent(grains, history, index - 1),
+          chooseLeastRecent(index === 1 ? redMeats : availableProteins, history, index - 1),
+          chooseLeastRecent(leafy, history, index - 1),
+          chooseLeastRecent(yellow, history, index - 1),
+          stage === "initial" ? null : chooseLeastRecent(otherVegetables, history, index - 1),
+        ]);
 
     if (index === 1 && currentTrial && !selected.some((item) => item.id === currentTrial.id)) {
       selected.push(currentTrial);
@@ -569,13 +641,15 @@ export function createBookBasedDayPlan(
     const reasons = [
       index === 1 && currentTrial
         ? `${currentTrial.name} ${trialDay}/${guide.newFoodIntervalDays[1]}일차예요. 새 재료만 추가하고 앞서 통과한 재료는 계속 유지했어요.`
-        : "오늘의 식품군 균형과 최근 반복을 함께 보고 조합했어요.",
+        : template
+          ? `${template.sourcePage}의 단계별 메뉴를 먹어본 재료와 최근 반복에 맞춰 골랐어요.`
+          : "오늘의 식품군 균형과 최근 반복을 함께 보고 조합했어요.",
       redMeats.length || currentTrial?.foodGroup === "redMeat"
         ? `책의 매일 고기 원칙과 ${guide.meatGramsPerDay[0]}~${guide.meatGramsPerDay[1]}g 목표를 반영했어요.`
         : "아직 통과한 붉은 고기가 없어 도입 순서에서 우선 후보로 유지해요.",
       `현재 ${guide.label} 최소 질감에 맞춰 ${textureMm}mm 안팎으로 제안했어요.`,
     ];
-    meals.push(makeMeal(stage, index, mealTimes[index - 1], selected, index === 1 ? newId : null, textureMm, reasons, profile.preparationStyle));
+    meals.push(makeMeal(stage, index, mealTimes[index - 1], selected, index === 1 ? newId : null, textureMm, reasons, profile.preparationStyle, template));
   }
 
   const requestedSnackCount = profile.snacksPerDay ?? guide.snackRange[0];
@@ -583,23 +657,31 @@ export function createBookBasedDayPlan(
   const snackTimes = resolveSnackTimes(mealTimes, snackCount);
   const snacks: PlannedMeal[] = [];
   for (let index = 1; index <= snackCount; index += 1) {
+    const snackTemplates = stage === "initial"
+      ? []
+      : menusForStage(stage).filter((template) => template.kind === "snack"
+        && template.ingredientIds.every((id) => passed.some((ingredient) => ingredient.id === id)));
+    const snackTemplate = snackTemplates[(Number(isoDate(today).replaceAll("-", "")) + index - 1) % Math.max(1, snackTemplates.length)] ?? null;
+    const snackTemplateItems = snackTemplate ? templateIngredients(snackTemplate, passed) : [];
     const snackIngredient = chooseLeastRecent(index % 2 === 0 && dairy.length ? dairy : fruits, history, index - 1);
-    if (!snackIngredient) continue;
+    if (!snackTemplateItems.length && !snackIngredient) continue;
+    const snackItems = snackTemplateItems.length ? snackTemplateItems : [snackIngredient!];
     snacks.push({
       index,
       type: "snack",
       time: snackTimes[index - 1],
-      title: snackIngredient.name,
-      items: [itemFor(snackIngredient, null)],
+      title: snackTemplate?.title ?? snackIngredient!.name,
+      items: snackItems.map((ingredient) => itemFor(ingredient, null)),
       servingGuide: "다음 식사를 방해하지 않는 소량",
-      textureGuide: snackIngredient.category === "fruit" ? "즙이 아닌 부드러운 통과일 형태" : "무가당·무염 제품",
-      servingMode: stage === "middle" ? "핑거푸드 또는 으깬 형태" : "간식 접시에 분리 제공",
+      textureGuide: snackItems.some((ingredient) => ingredient.category === "fruit") ? "즙이 아닌 부드러운 통과일 형태" : "무가당·무염 제품",
+      servingMode: snackTemplate?.servingMode ?? (stage === "middle" ? "핑거푸드 또는 으깬 형태" : "간식 접시에 분리 제공"),
       preparationSteps: [
-        snackIngredient.category === "fruit" ? "껍질·씨·단단한 부분을 제거하고 잇몸으로 으깨지는 형태로 준비해요." : "무가당·무염 제품인지 확인해요.",
+        snackTemplate ? menuInstruction(snackTemplate.kind, textureMm) : snackIngredient!.category === "fruit" ? "껍질·씨·단단한 부분을 제거하고 잇몸으로 으깨지는 형태로 준비해요." : "무가당·무염 제품인지 확인해요.",
         "식사를 대신하지 않는 소량을 간식 접시에 따로 놓아요.",
       ],
       storageGuide: "먹던 음식은 다시 보관하지 않고, 준비한 제품의 보관 표시를 따라요.",
-      reasons: ["세 끼 사이의 작은 위 용량을 보완하되 식사량을 대신하지 않아요."],
+      reasons: [snackTemplate ? `${snackTemplate.sourcePage}의 단계 간식 예시를 먹어본 재료로 구성했어요.` : "세 끼 사이의 작은 위 용량을 보완하되 식사량을 대신하지 않아요."],
+      bookReference: snackTemplate?.sourcePage,
     });
   }
 

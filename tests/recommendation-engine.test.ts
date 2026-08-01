@@ -16,6 +16,7 @@ import type {
   ChildIngredientState,
   MealHistoryEntry,
 } from "../lib/domain";
+import { stageMenuCatalog } from "../lib/stage-menu-catalog";
 
 const baseProfile: BabyProfile = {
   id: "child",
@@ -335,4 +336,54 @@ test("uses three family-defined meal times without forcing four-hour gaps", () =
     new Date("2026-07-31T12:00:00.000Z"),
   );
   assert.deepEqual(plan.meals.map((meal) => meal.time), profile.mealTimes);
+});
+
+test("every stage menu only references ingredients in the app catalog", () => {
+  const ingredientIds = new Set(ingredientCatalog.map((ingredient) => ingredient.id));
+  const missing = stageMenuCatalog.flatMap((menu) => menu.ingredientIds.filter((id) => !ingredientIds.has(id)));
+  assert.deepEqual(missing, []);
+  assert.ok(stageMenuCatalog.filter((menu) => menu.stage === "middle").length >= 15);
+  assert.ok(stageMenuCatalog.filter((menu) => menu.stage === "late").length >= 20);
+  assert.ok(stageMenuCatalog.filter((menu) => menu.stage === "completion").length >= 25);
+});
+
+for (const scenario of [
+  { stage: "middle", ageMonths: 8, textureMm: 4, sourcePattern: /책 p\.1[4-7]/ },
+  { stage: "late", ageMonths: 10, textureMm: 6, sourcePattern: /책 p\.(18|19|20|21|22)/ },
+  { stage: "completion", ageMonths: 14, textureMm: 8, sourcePattern: /책 p\.2[3-7]/ },
+] as const) {
+  test(`uses book menu templates end-to-end in the ${scenario.stage} stage`, () => {
+    const profile: BabyProfile = {
+      ...baseProfile,
+      stage: scenario.stage,
+      ageMonths: scenario.ageMonths,
+      mealsPerDay: 3,
+      snacksPerDay: scenario.stage === "middle" ? 1 : 2,
+      textureMm: scenario.textureMm,
+    };
+    const states = ingredientCatalog.map((ingredient) => passed(ingredient.id));
+    const plan = createBookBasedDayPlan(profile, ingredientCatalog, states, [], new Date("2026-08-01T12:00:00.000Z"));
+
+    assert.equal(plan.meals.length, 3);
+    assert.ok(plan.meals.every((meal) => meal.bookReference));
+    assert.ok(plan.meals.every((meal) => scenario.sourcePattern.test(meal.bookReference!)));
+    assert.ok(plan.meals.every((meal) => meal.preparationSteps.length >= 4));
+    assert.ok(plan.meals.every((meal) => meal.items.some((item) => ["grain", "starchyFood"].includes(item.ingredient.foodGroup ?? ""))));
+    assert.equal(new Set(plan.meals.map((meal) => meal.title)).size, plan.meals.length);
+  });
+}
+
+test("adds one new trial to a late-stage menu without dropping the existing dish", () => {
+  const profile: BabyProfile = { ...baseProfile, stage: "late", ageMonths: 10, mealsPerDay: 3, snacksPerDay: 2, textureMm: 6 };
+  const states = ingredientCatalog
+    .filter((ingredient) => ingredient.id !== "kiwi")
+    .map((ingredient) => passed(ingredient.id))
+    .concat({ ingredientId: "kiwi", status: "testing", testDay: 1, exposureCount: 0, lastOfferedAt: null });
+  const plan = createBookBasedDayPlan(profile, ingredientCatalog, states, [], new Date("2026-08-01T12:00:00.000Z"));
+  const newItems = plan.meals.flatMap((meal) => meal.items.filter((item) => item.isNewExposure));
+
+  assert.equal(newItems.length, 1);
+  assert.equal(newItems[0].ingredient.id, "kiwi");
+  assert.match(plan.meals[0].title, /키위 도입/);
+  assert.ok(plan.meals[0].items.length > 1);
 });

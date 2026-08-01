@@ -1,7 +1,7 @@
 import type { BookRule, StageGuide, TemporaryCondition } from "./domain";
 
 export const BOOK_EDITION = "삐뽀삐뽀 119 이유식, 2023 최신개정판";
-export const RECOMMENDATION_VERSION = "pp119-complete-v1";
+export const RECOMMENDATION_VERSION = "pp119-complete-v2";
 
 export const stageGuides: StageGuide[] = [
   {
