@@ -2562,18 +2562,19 @@ export function MealApp() {
       }
       setFamilyWorkspace(nextWorkspace);
       const child = nextWorkspace?.children[0];
-      if (!child) {
+      const householdId = nextWorkspace?.householdId;
+      if (!child || !householdId) {
         setRecords([]);
         setIngredientStates([]);
         setMealHistory([]);
-        setCustomIngredients(nextWorkspace ? await loadCustomIngredients(nextWorkspace.householdId) : []);
+        setCustomIngredients(householdId ? await loadCustomIngredients(householdId) : []);
         setRoutineLogs([]);
         return;
       }
       const [nextRecords, recommendationInputs, nextCustomIngredients, nextRoutineLogs] = await Promise.all([
         loadFamilyMealRecords(child.id),
         loadRecommendationInputs(child.id),
-        loadCustomIngredients(nextWorkspace.householdId),
+        loadCustomIngredients(householdId),
         loadDailyRoutineLogs(child.id).catch(() => [] as DailyRoutineLog[]),
       ]);
       setRecords(nextRecords);
@@ -2598,7 +2599,7 @@ export function MealApp() {
 
   useEffect(() => {
     if (!isSupabaseConfigured()) return;
-    void refreshFamilyData();
+    const initialRefresh = window.setTimeout(() => void refreshFamilyData(), 0);
     const client = getSupabaseClient();
     const { data } = client.auth.onAuthStateChange(() => {
       window.setTimeout(() => void refreshFamilyData(), 0);
@@ -2610,6 +2611,7 @@ export function MealApp() {
     document.addEventListener("visibilitychange", refreshWhenVisible);
     const interval = window.setInterval(() => void refreshFamilyData(), 30_000);
     return () => {
+      window.clearTimeout(initialRefresh);
       data.subscription.unsubscribe();
       window.removeEventListener("focus", refreshWhenVisible);
       document.removeEventListener("visibilitychange", refreshWhenVisible);

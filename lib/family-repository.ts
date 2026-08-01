@@ -60,6 +60,57 @@ export interface SaveFamilyMealInput {
   recommendationReasons: string[];
 }
 
+interface MealPlanItemRow {
+  ingredient_id: string;
+}
+
+interface RecommendationHistoryRow {
+  recorded_at: string;
+  meal_plans?: { meal_plan_items?: MealPlanItemRow[] | null } | null;
+  completion: MealHistoryEntry["completion"];
+  texture_mm: number | null;
+  offered_grams: number | null;
+  reaction: FamilyMealReaction;
+}
+
+interface MealLogRow {
+  id: string;
+  completion: FamilyMealCompletion;
+  reaction: FamilyMealReaction;
+  note: string | null;
+  recorded_by: string;
+  recorded_at: string;
+}
+
+interface CompletedMealPlanRow {
+  id: string;
+  meal_date: string;
+  meal_index: number;
+  planned_time: string;
+  title: string;
+  texture_mm: number | null;
+  meal_plan_items?: MealPlanItemRow[] | null;
+  meal_logs?: MealLogRow | MealLogRow[] | null;
+}
+
+interface ChildRow {
+  id: string;
+  nickname: string;
+  stage: BabyProfile["stage"];
+  birth_date: string;
+  weaning_start_date: string | null;
+  corrected_age_days: number | null;
+  readiness: NonNullable<BabyProfile["readiness"]>;
+  meals_per_day: number;
+  snacks_per_day: number;
+  preferred_meal_time: string;
+  milk_ml_per_day: number | null;
+  texture_mm: number;
+  preparation_style: BabyProfile["preparationStyle"];
+  temporary_condition: NonNullable<BabyProfile["temporaryCondition"]>;
+  development_skills?: (Partial<NonNullable<BabyProfile["skills"]>> & { mealTimes?: unknown }) | null;
+}
+
 export async function loadDailyRoutineLogs(childId: string): Promise<DailyRoutineLog[]> {
   const { data, error } = await getSupabaseClient()
     .from("daily_routine_logs")
@@ -442,13 +493,13 @@ export async function loadRecommendationInputs(childId: string): Promise<{
       acceptedTextureMm: row.accepted_texture_mm ?? [],
       lastReaction: row.last_reaction,
     })),
-    history: (historyRows ?? []).map((row: any) => ({
+    history: ((historyRows ?? []) as RecommendationHistoryRow[]).map((row) => ({
       servedAt: row.recorded_at,
-      ingredientIds: row.meal_plans?.meal_plan_items?.map((item: any) => item.ingredient_id) ?? [],
+      ingredientIds: row.meal_plans?.meal_plan_items?.map((item) => item.ingredient_id) ?? [],
       completion: row.completion,
       mealType: "meal",
-      textureMm: row.texture_mm,
-      offeredGrams: row.offered_grams,
+      textureMm: row.texture_mm ?? undefined,
+      offeredGrams: row.offered_grams ?? undefined,
       reaction: row.reaction === "taste_rejection" ? "tasteRejection" : row.reaction === "texture_difficulty" ? "textureDifficulty" : row.reaction === "needs_review" ? "needsReview" : "none",
     })),
   };
@@ -479,7 +530,7 @@ export async function loadFamilyMealRecords(childId: string): Promise<FamilyMeal
     .order("meal_date", { ascending: false });
   if (error) throw error;
 
-  return (data ?? []).flatMap((plan: any) => {
+  return ((data ?? []) as CompletedMealPlanRow[]).flatMap((plan) => {
     const log = Array.isArray(plan.meal_logs) ? plan.meal_logs[0] : plan.meal_logs;
     if (!log) return [];
     return [{
@@ -489,7 +540,7 @@ export async function loadFamilyMealRecords(childId: string): Promise<FamilyMeal
       mealIndex: plan.meal_index,
       plannedTime: String(plan.planned_time).slice(0, 5),
       title: plan.title,
-      ingredientIds: (plan.meal_plan_items ?? []).map((item: any) => item.ingredient_id),
+      ingredientIds: (plan.meal_plan_items ?? []).map((item) => item.ingredient_id),
       completion: log.completion,
       reaction: log.reaction,
       note: log.note ?? "",
@@ -569,7 +620,7 @@ export async function saveFamilyMealRecord(input: SaveFamilyMealInput): Promise<
   if (logError) throw logError;
 }
 
-function mapChildRow(row: any): BabyProfile {
+function mapChildRow(row: ChildRow): BabyProfile {
   const birthDate = new Date(`${row.birth_date}T00:00:00`);
   const ageMonths = Math.max(0, Math.floor((Date.now() - birthDate.getTime()) / (30.4375 * 86_400_000)));
   const storedSkills = row.development_skills ?? {};
