@@ -696,6 +696,8 @@ function FamilySyncSection({ onWorkspaceChange }: { onWorkspaceChange: () => voi
     setMessage(null);
     try {
       await signInFamilyAnonymously();
+      setUserEmail("이 기기 보호자");
+      await refreshWorkspace();
       setMessage("이 기기를 보호자 계정으로 연결했어요. 이제 가족 코드를 입력해주세요.");
     } catch (error) {
       setMessage(familyAuthMessage(error, "이 기기를 연결하지 못했어요. 잠시 후 다시 시도해주세요."));
@@ -778,17 +780,16 @@ function FamilySyncSection({ onWorkspaceChange }: { onWorkspaceChange: () => voi
       </div>
 
       {!configured && <p className="sync-copy">공유 저장소 연결 정보가 설정되면 이메일 로그인을 사용할 수 있어요.</p>}
-      {configured && loading && !userEmail && <p className="sync-copy">연결 상태를 확인하고 있어요…</p>}
 
-      {configured && !loading && !userEmail && (
+      {configured && !userEmail && (
         <div className="device-connect-panel">
           <p className="sync-copy">이 아이폰을 보호자 기기로 연결한 뒤, 배우자에게 받은 가족 코드로 같은 기록에 참여하세요.</p>
-          <button className="primary-action" type="button" onClick={() => void connectThisDevice()}><Link2 size={17} aria-hidden="true" /> 이 기기 바로 연결</button>
+          <button className="primary-action" type="button" disabled={loading} onClick={() => void connectThisDevice()}><Link2 size={17} aria-hidden="true" /> {loading ? "이 기기 연결 중…" : "이 기기 바로 연결"}</button>
           <details className="email-login-details">
             <summary>기존 이메일 계정으로 로그인</summary>
             <form className="sync-form" onSubmit={requestLogin}>
-              <label><span>이메일</span><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@example.com" required /></label>
-              <button className="secondary-action" type="submit">로그인 링크 받기</button>
+              <label><span>이메일</span><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@example.com" required disabled={loading} /></label>
+              <button className="secondary-action" type="submit" disabled={loading}>로그인 링크 받기</button>
               <small>무료 기본 메일은 발송 수와 받을 수 있는 주소가 제한될 수 있어요.</small>
             </form>
           </details>

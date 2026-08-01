@@ -709,6 +709,7 @@ button {
 .sync-copy { margin: 16px 0 0; color: var(--ink-soft); font-size: 11px; line-height: 1.7; }
 .device-connect-panel { display: grid; gap: 14px; margin-top: 2px; }
 .device-connect-panel .primary-action { display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
+.device-connect-panel .primary-action:disabled { cursor: wait; opacity: 0.72; }
 .email-login-details { border-top: 1px solid var(--line); padding-top: 12px; }
 .email-login-details summary { color: var(--ink-soft); font-size: 10px; font-weight: 700; cursor: pointer; }
 .email-login-details .sync-form { margin-top: 13px; }
