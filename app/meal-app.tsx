@@ -15,7 +15,9 @@ import {
   Info,
   Plus,
   RefreshCw,
+  RotateCcw,
   Sprout,
+  Trash2,
   X,
 } from "lucide-react";
 import {
@@ -49,11 +51,13 @@ import {
   archiveCustomIngredient,
   createFamilyInvite,
   createFamilyWorkspace,
+  deleteMyAccount,
   ensureDefaultChild,
   joinFamilyWithCode,
   loadCustomIngredients,
   loadFamilyMealRecords,
   loadRecommendationInputs,
+  resetChildProgress,
   loadFamilyWorkspace,
   saveChildIngredientState,
   saveChildProfile,
@@ -75,6 +79,7 @@ type Amount = "taste" | "quarter" | "half" | "most";
 type SettingKey = "start" | "time" | "style";
 type ChoiceSettingKey = Exclude<SettingKey, "time">;
 type RecordDraft = { amount: Amount; reaction: FamilyMealReaction; note: string };
+type DataControlAction = "resetProgress" | "deleteAccount";
 
 type CalendarDay = {
   id: string;
@@ -128,6 +133,19 @@ function familyAuthMessage(error: unknown, fallback: string): string {
   }
   if (code === "anonymous_provider_disabled") {
     return "Supabase에서 익명 로그인을 한 번 켜야 해요. Authentication → Providers → Anonymous에서 활성화해주세요.";
+  }
+  return fallback;
+}
+
+function dataControlMessage(error: unknown, fallback: string): string {
+  const message = error instanceof Error
+    ? error.message
+    : (error as { message?: string } | null)?.message ?? String(error);
+  if (/reset_child_progress|delete_my_account|schema cache|function.*does not exist/i.test(message)) {
+    return "Supabase에서 데이터 관리 SQL을 한 번 실행해야 해요.";
+  }
+  if (/household owner|가족 관리자/i.test(message)) {
+    return "공유 진행 기록은 가족 관리자 계정에서만 초기화할 수 있어요.";
   }
   return fallback;
 }
@@ -1024,6 +1042,8 @@ function ProfileView({
   onEditProfile,
   onEditFeedingPlan,
   onExport,
+  onResetProgress,
+  onDeleteAccount,
   onWorkspaceChange,
 }: {
   profile: BabyProfile;
@@ -1032,6 +1052,8 @@ function ProfileView({
   onEditProfile: () => void;
   onEditFeedingPlan: () => void;
   onExport: () => void;
+  onResetProgress: () => void;
+  onDeleteAccount: () => void;
   onWorkspaceChange: () => void;
 }) {
   const stageDescription = profile.stage === "prestart" ? "이유식 시작 전" : `${stageLabels[profile.stage]} 진행 중`;
@@ -1074,7 +1096,84 @@ function ProfileView({
       <FamilySyncSection onWorkspaceChange={onWorkspaceChange} />
 
       <button className="export-button" type="button" onClick={onExport}><Download size={17} aria-hidden="true" /> 내 데이터 내보내기</button>
+
+      <section className="section-card data-control-card">
+        <div className="section-heading">
+          <div><span className="overline">테스트와 개인정보</span><h2>데이터 관리</h2></div>
+        </div>
+        <div className="data-control-list">
+          <button type="button" onClick={onResetProgress}>
+            <RotateCcw size={18} aria-hidden="true" />
+            <span><strong>진행 기록 초기화</strong><small>식사·재료 도입·추천 진행도를 지우고 시작 전으로 돌아가요.</small></span>
+            <ChevronRight size={17} aria-hidden="true" />
+          </button>
+          <button className="is-destructive" type="button" onClick={onDeleteAccount}>
+            <Trash2 size={18} aria-hidden="true" />
+            <span><strong>내 정보와 계정 삭제</strong><small>내 로그인과 내가 남긴 기록을 영구 삭제해요.</small></span>
+            <ChevronRight size={17} aria-hidden="true" />
+          </button>
+        </div>
+      </section>
     </>
+  );
+}
+
+function DataControlSheet({
+  action,
+  onConfirm,
+  onClose,
+}: {
+  action: DataControlAction;
+  onConfirm: () => Promise<void>;
+  onClose: () => void;
+}) {
+  const isReset = action === "resetProgress";
+  const confirmationWord = isReset ? "초기화" : "계정삭제";
+  const [confirmation, setConfirmation] = useState("");
+  const [working, setWorking] = useState(false);
+
+  const confirm = async () => {
+    if (confirmation.trim() !== confirmationWord) return;
+    dismissMobileKeyboard();
+    setWorking(true);
+    try {
+      await onConfirm();
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  return (
+    <div className="sheet-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="record-sheet compact-sheet data-control-sheet" role="dialog" aria-modal="true" aria-labelledby="data-control-title" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="sheet-handle" aria-hidden="true" />
+        <div className="sheet-heading">
+          <div><span className="overline">되돌릴 수 없는 작업</span><h2 id="data-control-title">{isReset ? "진행 기록을 초기화할까요?" : "계정과 내 정보를 삭제할까요?"}</h2></div>
+          <button className="close-button" type="button" onClick={onClose} aria-label="닫기"><X size={19} /></button>
+        </div>
+        <div className="data-control-summary">
+          {isReset ? (
+            <>
+              <p><strong>삭제:</strong> 모든 식사 기록, 재료 도입 상태, 반응 기록, 추천 진행도</p>
+              <p><strong>유지:</strong> 아이 이름·생일, 가족 연결, 직접 추가한 재료</p>
+              <p>가족이 공유하는 진행 기록도 함께 초기화되며, 이유식 시작 전 화면으로 돌아갑니다.</p>
+            </>
+          ) : (
+            <>
+              <p><strong>삭제:</strong> 현재 로그인 계정, 가족 연결, 내가 작성한 식사·반응 기록</p>
+              <p>다른 보호자가 있으면 가족 관리 권한과 그 보호자의 기록은 유지됩니다. 혼자 사용하는 가족 공간이라면 가족 데이터 전체가 삭제됩니다.</p>
+            </>
+          )}
+        </div>
+        <label className="danger-confirm-field">
+          <span>계속하려면 <strong>{confirmationWord}</strong>라고 입력하세요.</span>
+          <input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="off" autoCapitalize="none" />
+        </label>
+        <button className="danger-confirm-button" type="button" disabled={confirmation.trim() !== confirmationWord || working} onClick={() => void confirm()}>
+          {working ? "처리 중…" : isReset ? "모든 진행 기록 초기화" : "계정과 내 정보 영구 삭제"}
+        </button>
+      </section>
+    </div>
   );
 }
 
@@ -2014,6 +2113,7 @@ export function MealApp() {
   const [startWeaningOpen, setStartWeaningOpen] = useState(false);
   const [profileEditorOpen, setProfileEditorOpen] = useState(false);
   const [feedingPlanOpen, setFeedingPlanOpen] = useState(false);
+  const [dataControlAction, setDataControlAction] = useState<DataControlAction | null>(null);
   const [editingSetting, setEditingSetting] = useState<SettingKey | null>(null);
   const [settings, setSettings] = useState<Record<SettingKey, string>>({
     start: "만 6개월",
@@ -2447,6 +2547,47 @@ export function MealApp() {
     showToast("내보내기 파일을 만들었어요.");
   };
 
+  const resetProgress = async () => {
+    if (!currentChild) {
+      setDataControlAction(null);
+      showToast("가족 공간에 연결된 아이 정보가 없어요.");
+      return;
+    }
+    try {
+      await resetChildProgress(currentChild.id);
+      await refreshFamilyData();
+      setRecords([]);
+      setIngredientStates([]);
+      setMealHistory([]);
+      setPreviewStarted(false);
+      setActiveTab("today");
+      setSelectedDate(todayId);
+      setDataControlAction(null);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      showToast("진행 기록을 지우고 시작 전으로 돌아왔어요.");
+    } catch (error) {
+      showToast(dataControlMessage(error, "진행 기록을 초기화하지 못했어요."));
+    }
+  };
+
+  const removeAccount = async () => {
+    try {
+      await deleteMyAccount();
+      setFamilyWorkspace(null);
+      setRecords([]);
+      setIngredientStates([]);
+      setMealHistory([]);
+      setCustomIngredients([]);
+      setPreviewStarted(false);
+      setActiveTab("today");
+      setDataControlAction(null);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      showToast("계정과 내 정보를 삭제했어요.");
+    } catch (error) {
+      showToast(dataControlMessage(error, "계정과 내 정보를 삭제하지 못했어요."));
+    }
+  };
+
   const goHome = () => {
     setActiveTab("today");
     setPreviewStarted(false);
@@ -2515,6 +2656,8 @@ export function MealApp() {
             onEditProfile={() => setProfileEditorOpen(true)}
             onEditFeedingPlan={() => setFeedingPlanOpen(true)}
             onExport={exportData}
+            onResetProgress={() => setDataControlAction("resetProgress")}
+            onDeleteAccount={() => setDataControlAction("deleteAccount")}
             onWorkspaceChange={refreshFamilyData}
           />
         )}
@@ -2581,6 +2724,14 @@ export function MealApp() {
 
       {editingSetting && editingSetting !== "time" && (
         <SettingSheet settingKey={editingSetting} value={settings[editingSetting]} onSelect={updateSetting} onClose={() => setEditingSetting(null)} />
+      )}
+
+      {dataControlAction && (
+        <DataControlSheet
+          action={dataControlAction}
+          onConfirm={dataControlAction === "resetProgress" ? resetProgress : removeAccount}
+          onClose={() => setDataControlAction(null)}
+        />
       )}
 
       {toast && <div className="toast" role="status">✓ {toast}</div>}

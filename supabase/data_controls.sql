@@ -1,0 +1,106 @@
+-- Run once in Supabase SQL Editor after schema.sql and book_engine_v2.sql.
+-- Adds owner-only progress reset and authenticated account deletion.
+
+create or replace function public.reset_child_progress(target_child_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  target_household_id uuid;
+begin
+  if auth.uid() is null then
+    raise exception 'Authentication required';
+  end if;
+
+  select c.household_id
+  into target_household_id
+  from public.children c
+  join public.households h on h.id = c.household_id
+  where c.id = target_child_id
+    and h.owner_id = auth.uid();
+
+  if target_household_id is null then
+    raise exception 'Only the household owner can reset shared progress';
+  end if;
+
+  delete from public.ingredient_reactions where child_id = target_child_id;
+  delete from public.daily_recommendations where child_id = target_child_id;
+  delete from public.preparation_tasks where child_id = target_child_id;
+  delete from public.child_ingredients where child_id = target_child_id;
+  delete from public.meal_plans where child_id = target_child_id;
+
+  update public.children
+  set weaning_start_date = null,
+      stage = 'prestart',
+      meals_per_day = 1,
+      snacks_per_day = 0,
+      texture_mm = 0,
+      temporary_condition = 'none',
+      readiness = '{"tongueThrustGone":false,"headControl":false,"sitsWithSupport":false,"foodInterest":false}'::jsonb,
+      development_skills = '{"handlesCurrentTexture":false,"reachesAndGrasps":false,"fingerFood":false,"spoonPractice":false,"cupPractice":false}'::jsonb,
+      updated_at = now()
+  where id = target_child_id;
+end;
+$$;
+
+create or replace function public.delete_my_account()
+returns void
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  calling_user_id uuid := auth.uid();
+  owned_household record;
+  replacement_owner_id uuid;
+begin
+  if calling_user_id is null then
+    raise exception 'Authentication required';
+  end if;
+
+  -- Remove records authored by this account while preserving other guardians' records.
+  delete from public.ingredient_reactions
+  where recorded_by = calling_user_id;
+
+  delete from public.meal_plans mp
+  using public.meal_logs ml
+  where ml.meal_plan_id = mp.id
+    and ml.recorded_by = calling_user_id;
+
+  -- Transfer shared households; delete a household only when nobody else belongs to it.
+  for owned_household in
+    select id from public.households where owner_id = calling_user_id
+  loop
+    select hm.user_id
+    into replacement_owner_id
+    from public.household_members hm
+    where hm.household_id = owned_household.id
+      and hm.user_id <> calling_user_id
+    order by hm.joined_at
+    limit 1;
+
+    if replacement_owner_id is null then
+      delete from public.households where id = owned_household.id;
+    else
+      update public.households
+      set owner_id = replacement_owner_id,
+          updated_at = now()
+      where id = owned_household.id;
+
+      update public.household_members
+      set role = case when user_id = replacement_owner_id then 'owner' else 'parent' end
+      where household_id = owned_household.id;
+    end if;
+  end loop;
+
+  delete from public.household_members where user_id = calling_user_id;
+  delete from auth.users where id = calling_user_id;
+end;
+$$;
+
+revoke all on function public.reset_child_progress(uuid) from public;
+revoke all on function public.delete_my_account() from public;
+grant execute on function public.reset_child_progress(uuid) to authenticated;
+grant execute on function public.delete_my_account() to authenticated;

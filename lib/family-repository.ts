@@ -101,6 +101,20 @@ export async function signOutFamily(): Promise<void> {
   if (error) throw error;
 }
 
+export async function resetChildProgress(childId: string): Promise<void> {
+  const { error } = await getSupabaseClient().rpc("reset_child_progress", {
+    target_child_id: childId,
+  });
+  if (error) throw error;
+}
+
+export async function deleteMyAccount(): Promise<void> {
+  const client = getSupabaseClient();
+  const { error } = await client.rpc("delete_my_account");
+  if (error) throw error;
+  await client.auth.signOut({ scope: "local" }).catch(() => undefined);
+}
+
 export async function createFamilyWorkspace(
   householdName: string,
   displayName: string,
