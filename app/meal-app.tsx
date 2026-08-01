@@ -541,6 +541,8 @@ function TodayMeal({
   ingredients,
   ingredientStates,
   mealHistory,
+  records,
+  todayId,
   onBack,
   onRecord,
 }: {
@@ -548,6 +550,8 @@ function TodayMeal({
   ingredients: IngredientDefinition[];
   ingredientStates: ChildIngredientState[];
   mealHistory: MealHistoryEntry[];
+  records: FamilyMealRecord[];
+  todayId: string;
   onBack?: () => void;
   onRecord: (mealIndex: number, ingredientIds: string[]) => void;
 }) {
@@ -561,6 +565,23 @@ function TodayMeal({
     ),
     [ingredientStates, ingredients, mealHistory, planProfile],
   );
+  const todayRecords = useMemo(
+    () => records.filter((record) => record.date === todayId),
+    [records, todayId],
+  );
+  const recordByMealIndex = useMemo(
+    () => new Map(todayRecords.map((record) => [record.mealIndex, record])),
+    [todayRecords],
+  );
+  const nextMeal = bookPlan.meals.find((meal) => !recordByMealIndex.has(meal.index));
+  const focusedMeal = nextMeal ?? bookPlan.meals[bookPlan.meals.length - 1];
+  const focusedRecord = recordByMealIndex.get(focusedMeal.index);
+  const completedMealCount = bookPlan.meals.filter((meal) => recordByMealIndex.has(meal.index)).length;
+  const allMealsRecorded = !nextMeal && bookPlan.meals.length > 0;
+  const focusedMealIncludesTrial = Boolean(
+    bookPlan.currentTrial
+      && focusedMeal.items.some((item) => item.ingredient.id === bookPlan.currentTrial?.id),
+  );
   const suggestion = useMemo(
     (): MealSuggestion => {
       if (profile.stage === "prestart") {
@@ -571,20 +592,28 @@ function TodayMeal({
           mealHistory,
         );
       }
-      const meal = bookPlan.meals[0];
       return {
-        title: meal.title,
-        mealTime: meal.time,
-        servingGuide: meal.servingGuide,
-        textureGuide: meal.textureGuide,
-        ingredients: meal.items.map((item) => item.ingredient),
-        testLabel: bookPlan.currentTrial ? `${bookPlan.currentTrial.name} ${bookPlan.trialDay ?? 1}/3일` : null,
-        reasons: meal.reasons,
+        title: focusedRecord?.title ?? focusedMeal.title,
+        mealTime: focusedRecord?.plannedTime ?? focusedMeal.time,
+        servingGuide: focusedMeal.servingGuide,
+        textureGuide: focusedMeal.textureGuide,
+        ingredients: focusedRecord
+          ? focusedRecord.ingredientIds
+            .map((id) => ingredients.find((ingredient) => ingredient.id === id))
+            .filter((ingredient): ingredient is IngredientDefinition => Boolean(ingredient))
+          : focusedMeal.items.map((item) => item.ingredient),
+        testLabel: focusedRecord
+          ? `기록 완료 · ${completionLabels[focusedRecord.completion]}`
+          : focusedMealIncludesTrial && bookPlan.currentTrial
+            ? `${bookPlan.currentTrial.name} ${bookPlan.trialDay ?? 1}/3일`
+            : null,
+        reasons: focusedMeal.reasons,
       };
     },
-    [bookPlan, ingredientStates, ingredients, mealHistory, profile],
+    [bookPlan, focusedMeal, focusedMealIncludesTrial, focusedRecord, ingredientStates, ingredients, mealHistory, profile],
   );
-  const [simpleRice, setSimpleRice] = useState(false);
+  const [simpleRiceMealIndex, setSimpleRiceMealIndex] = useState<number | null>(null);
+  const simpleRice = simpleRiceMealIndex === focusedMeal.index;
   const canChooseSimpleRice = suggestion.ingredients.some((ingredient) => ingredient.id === "rice")
     && suggestion.ingredients.some((ingredient) => ingredient.id === "oatmeal");
   const visibleIngredients = simpleRice
@@ -602,10 +631,20 @@ function TodayMeal({
       <section className="day-intro">
         <div>
           <span className="overline">{formatKoreanTime(suggestion.mealTime)}</span>
-          <h1>{bookPlan.currentTrial ? `${bookPlan.currentTrial.name} ${bookPlan.trialDay ?? 1}일차` : `${bookPlan.stageLabel} 오늘 한끼`}</h1>
-          <p>{bookPlan.summaryReasons[0]}</p>
+          <h1>{profile.stage === "prestart"
+            ? "첫 끼 미리보기"
+            : allMealsRecorded
+              ? "오늘 식사를 모두 기록했어요"
+              : `${focusedMeal.index}번째 이유식`}</h1>
+          <p>{profile.stage === "prestart"
+            ? bookPlan.summaryReasons[0]
+            : allMealsRecorded
+              ? `${bookPlan.meals.length}끼 기록을 마쳤어요. 아래 일정이나 버튼을 눌러 언제든 수정할 수 있어요.`
+              : `오늘 ${bookPlan.meals.length}끼 중 ${completedMealCount}끼 기록 완료 · 다음 식사를 바로 보여드려요.`}</p>
         </div>
-        <div className="day-number" aria-label={`${bookPlan.trialDay ?? 1}일차`}>{String(bookPlan.trialDay ?? 1).padStart(2, "0")}</div>
+        <div className="day-number meal-progress-number" aria-label={`오늘 ${completedMealCount}/${bookPlan.meals.length}끼 기록`}>
+          {completedMealCount}/{bookPlan.meals.length}
+        </div>
       </section>
 
       <section className="meal-card">
@@ -621,7 +660,7 @@ function TodayMeal({
             <h2>{simpleRice ? "쌀죽" : suggestion.title}</h2>
           </div>
           {canChooseSimpleRice && (
-            <button className="swap-button" type="button" onClick={() => setSimpleRice((value) => !value)}>
+            <button className="swap-button" type="button" onClick={() => setSimpleRiceMealIndex((value) => value === focusedMeal.index ? null : focusedMeal.index)}>
               <RefreshCw size={13} aria-hidden="true" />
               {simpleRice ? "오트밀 포함" : "쌀만 사용"}
             </button>
@@ -654,8 +693,8 @@ function TodayMeal({
           </ul>
         </details>
 
-        <button className="primary-action" type="button" onClick={() => onRecord(1, visibleIngredients.map((ingredient) => ingredient.id))}>
-          식사 기록하기
+        <button className="primary-action" type="button" onClick={() => onRecord(focusedMeal.index, visibleIngredients.map((ingredient) => ingredient.id))}>
+          {focusedRecord ? `${focusedMeal.index}번째 기록 수정하기` : `${focusedMeal.index}번째 식사 기록하기`}
         </button>
       </section>
 
@@ -663,16 +702,35 @@ function TodayMeal({
         <section className="section-card daily-schedule-card">
           <div className="section-heading">
             <div><span className="overline">하루 전체</span><h2>오늘의 식사 일정</h2></div>
-            <span className="count-badge">{bookPlan.meals.length}끼{bookPlan.snacks.length ? ` + 간식 ${bookPlan.snacks.length}` : ""}</span>
+            <span className="count-badge">{completedMealCount}/{bookPlan.meals.length}끼 기록</span>
           </div>
           <div className="daily-schedule-list">
-            {bookPlan.meals.slice(1).map((meal) => (
-              <button type="button" key={`meal-${meal.index}`} onClick={() => onRecord(meal.index, meal.items.map((item) => item.ingredient.id))}>
-                <span className="schedule-time">{formatKoreanTime(meal.time)}</span>
-                <span><strong>{meal.index}번째 이유식 · {meal.title}</strong><small>{meal.items.map((item) => item.ingredient.name).join(" · ")}</small></span>
-                <ChevronRight size={17} aria-hidden="true" />
-              </button>
-            ))}
+            {bookPlan.meals.filter((meal) => meal.index !== focusedMeal.index).map((meal) => {
+              const savedRecord = recordByMealIndex.get(meal.index);
+              const ingredientNames = savedRecord
+                ? savedRecord.ingredientIds
+                  .map((id) => ingredients.find((ingredient) => ingredient.id === id)?.name)
+                  .filter((name): name is string => Boolean(name))
+                  .join(" · ")
+                : meal.items.map((item) => item.ingredient.name).join(" · ");
+              return (
+                <button
+                  className={savedRecord ? "is-completed" : ""}
+                  type="button"
+                  key={`meal-${meal.index}`}
+                  onClick={() => onRecord(meal.index, savedRecord?.ingredientIds ?? meal.items.map((item) => item.ingredient.id))}
+                >
+                  <span className="schedule-time">{formatKoreanTime(savedRecord?.plannedTime ?? meal.time)}</span>
+                  <span>
+                    <strong>{meal.index}번째 이유식 · {savedRecord?.title ?? meal.title}</strong>
+                    <small>{savedRecord ? `기록 완료 · ${completionLabels[savedRecord.completion]} · 눌러서 수정` : ingredientNames}</small>
+                  </span>
+                  {savedRecord
+                    ? <span className="schedule-complete-icon" aria-label="기록 완료"><Check size={14} aria-hidden="true" /></span>
+                    : <ChevronRight size={17} aria-hidden="true" />}
+                </button>
+              );
+            })}
             {bookPlan.snacks.map((snack) => (
               <div className="schedule-snack" key={`snack-${snack.index}`}>
                 <span className="schedule-time">{formatKoreanTime(snack.time)}</span>
@@ -2358,6 +2416,8 @@ export function MealApp() {
               ingredients={allIngredients}
               ingredientStates={ingredientStates}
               mealHistory={mealHistory}
+              records={records}
+              todayId={todayId}
               onBack={displayProfile.stage === "prestart" ? () => setPreviewStarted(false) : undefined}
               onRecord={(mealIndex, ingredientIds) => { setRecordTargetMealIndex(mealIndex); setRecordIngredientIds(ingredientIds); setRecordTargetDate(todayId); setRecordOpen(true); }}
             />
