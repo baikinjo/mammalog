@@ -202,7 +202,46 @@ export interface PlannedMeal {
   servingGuide: string;
   textureGuide: string;
   servingMode: string;
+  preparationSteps: string[];
+  storageGuide: string;
   reasons: string[];
+}
+
+export interface DailyRoutineLog {
+  childId: string;
+  date: string;
+  milkMl: number | null;
+  snackCount: number;
+  cupPractice: boolean;
+  spoonPractice: boolean;
+  fingerFood: boolean;
+  note: string;
+  updatedBy?: string | null;
+  updatedAt?: string | null;
+}
+
+export type AdaptiveTone = "positive" | "attention" | "neutral";
+
+export interface AdaptiveAdjustment {
+  id: string;
+  title: string;
+  detail: string;
+  tone: AdaptiveTone;
+}
+
+export interface ProgressionProposal {
+  action: "advance" | "hold" | "simplify" | "review";
+  title: string;
+  detail: string;
+  targetStage?: Exclude<WeaningStage, "prestart">;
+  targetTextureMm: number;
+  reasons: string[];
+  requiresParentConfirmation: true;
+}
+
+export interface AdaptiveReview {
+  adjustments: AdaptiveAdjustment[];
+  progression: ProgressionProposal;
 }
 
 export interface TargetCheck {

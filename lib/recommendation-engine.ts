@@ -220,6 +220,13 @@ export function chooseNextIngredient(
   history: MealHistoryEntry[],
   today = new Date(),
 ): IngredientDefinition | null {
+  const latestReaction = history
+    .filter((entry) => new Date(entry.servedAt).getTime() <= today.getTime())
+    .slice()
+    .sort((left, right) => new Date(left.servedAt).getTime() - new Date(right.servedAt).getTime())
+    .at(-1)?.reaction;
+  if (latestReaction === "needsReview" || latestReaction === "textureDifficulty") return null;
+
   const activeTest = states.find((state) => state.status === "testing");
   if (activeTest) {
     const activeIngredient = definitions.find((item) => item.id === activeTest.ingredientId);
@@ -399,6 +406,39 @@ function mealTitle(stage: Exclude<WeaningStage, "prestart">, items: IngredientDe
   return `${grain?.name ?? "밥"}과 ${[protein, ...vegetables].filter(Boolean).map((item) => item?.name).join("·")} 반찬`;
 }
 
+function preparationForMeal(
+  stage: Exclude<WeaningStage, "prestart">,
+  ingredients: IngredientDefinition[],
+  servingMode: string,
+  textureMm: number,
+  newIngredientId: string | null,
+): string[] {
+  const guide = getStageGuide(stage);
+  const grain = ingredients.find((item) => ["grain", "starchyFood"].includes(item.foodGroup ?? ""));
+  const animalFoods = ingredients.filter((item) => ["meat", "fish", "egg"].includes(item.category));
+  const vegetables = ingredients.filter((item) => item.category === "vegetable");
+  const constraints = ingredients.flatMap((item) => item.preparationConstraints ?? []).slice(0, 2);
+  const baseStep = stage === "initial"
+    ? `${grain?.name ?? "곡류"}는 ${guide.grainDescription} 기준으로 충분히 익혀 ${textureMm}mm 안팎 입자를 남겨요.`
+    : stage === "middle"
+      ? `${grain?.name ?? "곡류"}는 부드러운 죽으로, 다른 재료는 ${textureMm}mm 안팎으로 으깨거나 잘게 썰어요.`
+      : stage === "late"
+        ? `${grain?.name ?? "밥"}은 무른밥·진밥으로, 반찬은 ${textureMm}mm 안팎의 잇몸으로 으깨지는 크기로 준비해요.`
+        : `${grain?.name ?? "밥"}은 가족 밥보다 부드럽게, 반찬은 ${textureMm}mm 안팎으로 무염 조리해요.`;
+  const cookStep = animalFoods.length
+    ? `${animalFoods.map((item) => item.name).join("·")}은 속까지 완전히 익히고${vegetables.length ? `, ${vegetables.map((item) => item.name).join("·")}은 손가락으로 눌러 으깨질 만큼 익혀요.` : "."}`
+    : `${vegetables.map((item) => item.name).join("·") || "재료"}은 손가락으로 눌러 으깨질 만큼 부드럽게 익혀요.`;
+  const serveStep = newIngredientId
+    ? `새 재료 ${ingredients.find((item) => item.id === newIngredientId)?.name ?? "한 가지"}는 먼저 소량을 ${servingMode === "섞은 죽" ? "익숙한 죽 한쪽에 얹어" : "분리해"} 반응을 구분하고, 나머지는 ${servingMode}로 제공해요.`
+    : `${servingMode} 형태로 놓고 무엇을 얼마나 먹을지는 아이가 결정하게 해요.`;
+  return [baseStep, cookStep, serveStep, ...constraints.map((constraint) => `재료별 안전: ${constraint}`)];
+}
+
+function storageForProfile(profileStyle: BabyProfile["preparationStyle"]): string {
+  if (profileStyle === "fresh") return "가능하면 바로 제공하고, 남은 음식과 아이가 먹던 음식은 다시 보관하지 않아요.";
+  return "1회분씩 소분해 냉장 1~2일 또는 냉동 1~2주 안에 사용하고, 해동한 음식은 재냉동하지 않아요.";
+}
+
 function makeMeal(
   stage: Exclude<WeaningStage, "prestart">,
   index: number,
@@ -407,8 +447,10 @@ function makeMeal(
   newIngredientId: string | null,
   textureMm: number,
   reasons: string[],
+  preparationStyle: BabyProfile["preparationStyle"],
 ): PlannedMeal {
   const guide = getStageGuide(stage);
+  const servingMode = guide.servingModes[(index - 1) % guide.servingModes.length];
   return {
     index,
     type: "meal",
@@ -417,7 +459,9 @@ function makeMeal(
     items: ingredients.map((item) => itemFor(item, newIngredientId)),
     servingGuide: `${guide.offerGramsRange[0]}~${guide.offerGramsRange[1]}g 범위에서 아이가 먹는 만큼`,
     textureGuide: `${textureMm}mm 안팎 · ${guide.textureDescription}`,
-    servingMode: guide.servingModes[(index - 1) % guide.servingModes.length],
+    servingMode,
+    preparationSteps: preparationForMeal(stage, ingredients, servingMode, textureMm, newIngredientId),
+    storageGuide: storageForProfile(preparationStyle),
     reasons,
   };
 }
@@ -532,7 +576,7 @@ export function createBookBasedDayPlan(
         : "아직 통과한 붉은 고기가 없어 도입 순서에서 우선 후보로 유지해요.",
       `현재 ${guide.label} 최소 질감에 맞춰 ${textureMm}mm 안팎으로 제안했어요.`,
     ];
-    meals.push(makeMeal(stage, index, mealTimes[index - 1], selected, index === 1 ? newId : null, textureMm, reasons));
+    meals.push(makeMeal(stage, index, mealTimes[index - 1], selected, index === 1 ? newId : null, textureMm, reasons, profile.preparationStyle));
   }
 
   const requestedSnackCount = profile.snacksPerDay ?? guide.snackRange[0];
@@ -551,6 +595,11 @@ export function createBookBasedDayPlan(
       servingGuide: "다음 식사를 방해하지 않는 소량",
       textureGuide: snackIngredient.category === "fruit" ? "즙이 아닌 부드러운 통과일 형태" : "무가당·무염 제품",
       servingMode: stage === "middle" ? "핑거푸드 또는 으깬 형태" : "간식 접시에 분리 제공",
+      preparationSteps: [
+        snackIngredient.category === "fruit" ? "껍질·씨·단단한 부분을 제거하고 잇몸으로 으깨지는 형태로 준비해요." : "무가당·무염 제품인지 확인해요.",
+        "식사를 대신하지 않는 소량을 간식 접시에 따로 놓아요.",
+      ],
+      storageGuide: "먹던 음식은 다시 보관하지 않고, 준비한 제품의 보관 표시를 따라요.",
       reasons: ["세 끼 사이의 작은 위 용량을 보완하되 식사량을 대신하지 않아요."],
     });
   }

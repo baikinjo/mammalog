@@ -26,6 +26,7 @@ begin
   end if;
 
   delete from public.ingredient_reactions where child_id = target_child_id;
+  delete from public.daily_routine_logs where child_id = target_child_id;
   delete from public.daily_recommendations where child_id = target_child_id;
   delete from public.preparation_tasks where child_id = target_child_id;
   delete from public.child_ingredients where child_id = target_child_id;

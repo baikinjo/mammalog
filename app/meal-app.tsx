@@ -36,6 +36,7 @@ import {
 import type {
   BabyProfile,
   ChildIngredientState,
+  DailyRoutineLog,
   DailyRecommendation,
   DevelopmentSkills,
   FoodGroup,
@@ -44,6 +45,7 @@ import type {
   IntroductionGroup,
   MealHistoryEntry,
   MealSuggestion,
+  ProgressionProposal,
   ReadinessSignals,
   TemporaryCondition,
   WeaningStage,
@@ -56,6 +58,7 @@ import {
   ensureDefaultChild,
   joinFamilyWithCode,
   loadCustomIngredients,
+  loadDailyRoutineLogs,
   loadFamilyMealRecords,
   loadRecommendationInputs,
   removeFamilyMember,
@@ -65,6 +68,7 @@ import {
   saveChildProfile,
   saveCustomIngredient,
   saveDailyRecommendation,
+  saveDailyRoutineLog,
   saveFamilyMealRecord,
   updateCustomIngredient,
   sendMagicLink,
@@ -77,6 +81,7 @@ import {
 } from "../lib/family-repository";
 import { getSupabaseClient, isSupabaseConfigured } from "../lib/supabase-client";
 import { createWeeklyBalance } from "../lib/weekly-balance";
+import { createAdaptiveReview } from "../lib/adaptive-review";
 
 type Tab = "today" | "ingredients" | "records" | "profile";
 type Amount = "taste" | "quarter" | "half" | "most";
@@ -572,8 +577,10 @@ function TodayMeal({
   mealHistory,
   records,
   todayId,
+  routineLogs,
   onBack,
   onRecord,
+  onReviewProgress,
 }: {
   profile: BabyProfile;
   ingredients: IngredientDefinition[];
@@ -581,8 +588,10 @@ function TodayMeal({
   mealHistory: MealHistoryEntry[];
   records: FamilyMealRecord[];
   todayId: string;
+  routineLogs: DailyRoutineLog[];
   onBack?: () => void;
   onRecord: (mealIndex: number, ingredientIds: string[]) => void;
+  onReviewProgress: () => void;
 }) {
   const planProfile = useMemo(() => recommendationProfile(profile), [profile]);
   const bookPlan = useMemo(
@@ -607,6 +616,10 @@ function TodayMeal({
   const focusedRecord = recordByMealIndex.get(focusedMeal.index);
   const completedMealCount = bookPlan.meals.filter((meal) => recordByMealIndex.has(meal.index)).length;
   const allMealsRecorded = !nextMeal && bookPlan.meals.length > 0;
+  const adaptiveReview = useMemo(
+    () => createAdaptiveReview(planProfile, mealHistory, routineLogs),
+    [mealHistory, planProfile, routineLogs],
+  );
   const focusedMealIncludesTrial = Boolean(
     bookPlan.currentTrial
       && focusedMeal.items.some((item) => item.ingredient.id === bookPlan.currentTrial?.id),
@@ -722,9 +735,36 @@ function TodayMeal({
           </ul>
         </details>
 
+        <details className="reason-box cooking-guide">
+          <summary>오늘 만드는 법 · {focusedMeal.servingMode}</summary>
+          <ol>
+            {focusedMeal.preparationSteps.map((step) => <li key={step}>{step}</li>)}
+          </ol>
+          <p><strong>보관</strong> {focusedMeal.storageGuide}</p>
+        </details>
+
         <button className="primary-action" type="button" onClick={() => onRecord(focusedMeal.index, visibleIngredients.map((ingredient) => ingredient.id))}>
           {focusedRecord ? `${focusedMeal.index}번째 기록 수정하기` : `${focusedMeal.index}번째 식사 기록하기`}
         </button>
+      </section>
+
+      <section className="section-card adaptive-review-card">
+        <div className="section-heading">
+          <div><span className="overline">최근 기록 반영</span><h2>다음 식사 조정</h2></div>
+          <span className={`count-badge is-${adaptiveReview.progression.action}`}>{adaptiveReview.progression.action === "advance" ? "진행 제안" : "현재 유지"}</span>
+        </div>
+        <div className="adaptive-adjustments">
+          {adaptiveReview.adjustments.map((adjustment) => (
+            <div className={`adaptive-adjustment is-${adjustment.tone}`} key={adjustment.id}>
+              <i aria-hidden="true">{adjustment.tone === "positive" ? "✓" : adjustment.tone === "attention" ? "!" : "·"}</i>
+              <p><strong>{adjustment.title}</strong><small>{adjustment.detail}</small></p>
+            </div>
+          ))}
+        </div>
+        <div className="progression-proposal">
+          <p><strong>{adaptiveReview.progression.title}</strong><small>{adaptiveReview.progression.detail}</small></p>
+          <button type="button" onClick={onReviewProgress}>설정에서 확인</button>
+        </div>
       </section>
 
       {(bookPlan.meals.length > 1 || bookPlan.snacks.length > 0) && (
@@ -903,6 +943,7 @@ function IngredientsView({
 
 function RecordsView({
   records,
+  routineLogs,
   workspace,
   profile,
   ingredients,
@@ -917,8 +958,10 @@ function RecordsView({
   onGoToday,
   onAddRecord,
   onEditRecord,
+  onEditRoutine,
 }: {
   records: FamilyMealRecord[];
+  routineLogs: DailyRoutineLog[];
   workspace: FamilyWorkspace | null;
   profile: BabyProfile;
   ingredients: IngredientDefinition[];
@@ -933,13 +976,17 @@ function RecordsView({
   onGoToday: () => void;
   onAddRecord: (date: string) => void;
   onEditRecord: (record: FamilyMealRecord) => void;
+  onEditRoutine: (date: string) => void;
 }) {
   const monthDays = useMemo(() => createMonthDays(calendarCursor), [calendarCursor]);
   const firstDayOffset = new Date(calendarCursor.year, calendarCursor.month, 1).getDay();
   const selectedRecords = records
     .filter((record) => record.date === selectedDate)
     .sort((left, right) => left.mealIndex - right.mealIndex);
-  const recordDates = useMemo(() => new Set(records.map((record) => record.date)), [records]);
+  const recordDates = useMemo(
+    () => new Set([...records.map((record) => record.date), ...routineLogs.map((log) => log.date)]),
+    [records, routineLogs],
+  );
   const selectedLabel = formatKoreanDate(selectedDate);
   const today = parseDateId(todayId);
   const canMoveToNextMonth = calendarCursor.year < today.getFullYear()
@@ -948,6 +995,7 @@ function RecordsView({
   const completedMealCount = Array.from({ length: mealCount }, (_, index) => index + 1)
     .filter((mealIndex) => selectedMealIndexes.has(mealIndex)).length;
   const isFutureDate = selectedDate > todayId;
+  const selectedRoutine = routineLogs.find((log) => log.date === selectedDate);
   const canAddRecord = !isFutureDate && completedMealCount < mealCount;
   const weeklyBalance = useMemo(
     () => createWeeklyBalance(profile, ingredients, ingredientStates, mealHistory, parseDateId(todayId)),
@@ -1029,6 +1077,27 @@ function RecordsView({
           <span className="record-dot-key"><i aria-hidden="true" /> 기록 있음</span>
           <p className="calendar-hint">과거 날짜는 기록을 추가·수정할 수 있고, 미래 날짜는 선택할 수 없어요.</p>
         </div>
+      </section>
+
+      <section className="section-card routine-summary-card">
+        <div className="section-heading">
+          <div><span className="overline">{selectedLabel}</span><h2>수유·간식·먹기 연습</h2></div>
+          {!isFutureDate && <button className="add-past-record-button" type="button" onClick={() => onEditRoutine(selectedDate)}>{selectedRoutine ? "수정" : "기록"}</button>}
+        </div>
+        {selectedRoutine ? (
+          <div className="routine-stat-grid">
+            <div><span>수유량</span><strong>{selectedRoutine.milkMl == null ? "미기록" : `${selectedRoutine.milkMl}ml`}</strong></div>
+            <div><span>간식</span><strong>{selectedRoutine.snackCount}회</strong></div>
+            <div className="routine-skills"><span>먹기 연습</span><strong>{[
+              selectedRoutine.fingerFood && "핑거푸드",
+              selectedRoutine.spoonPractice && "숟가락",
+              selectedRoutine.cupPractice && "컵",
+            ].filter(Boolean).join(" · ") || "미기록"}</strong></div>
+            {selectedRoutine.note && <p>{selectedRoutine.note}</p>}
+          </div>
+        ) : (
+          <p className="routine-empty">이날의 수유량, 간식과 컵·숟가락·핑거푸드 연습을 함께 남길 수 있어요.</p>
+        )}
       </section>
 
       <section className="section-card">
@@ -1897,10 +1966,12 @@ function BabyProfileSheet({
 
 function FeedingPlanSheet({
   profile,
+  progression,
   onSave,
   onClose,
 }: {
   profile: BabyProfile;
+  progression?: ProgressionProposal;
   onSave: (profile: BabyProfile) => Promise<void>;
   onClose: () => void;
 }) {
@@ -1949,6 +2020,15 @@ function FeedingPlanSheet({
           <button className="close-button" type="button" onClick={onClose} aria-label="닫기"><X size={19} /></button>
         </div>
         <form className="feeding-plan-form" onSubmit={(event) => void submit(event)}>
+          {progression?.action === "advance" && (
+            <div className="sheet-progression-banner">
+              <p><strong>{progression.title}</strong><small>{progression.detail}</small></p>
+              <button type="button" onClick={() => {
+                if (progression.targetStage) setStage(progression.targetStage);
+                setTextureMm(progression.targetTextureMm);
+              }}>제안값 넣기</button>
+            </div>
+          )}
           <fieldset className="form-field">
             <legend>현재 단계</legend>
             <div className="stage-picker">
@@ -2112,6 +2192,89 @@ function MealTimesSettingSheet({
   );
 }
 
+function RoutineLogSheet({
+  targetDate,
+  childId,
+  initialLog,
+  onClose,
+  onSave,
+}: {
+  targetDate: string;
+  childId: string;
+  initialLog?: DailyRoutineLog;
+  onClose: () => void;
+  onSave: (log: DailyRoutineLog) => Promise<void>;
+}) {
+  const [milkMl, setMilkMl] = useState(initialLog?.milkMl?.toString() ?? "");
+  const [snackCount, setSnackCount] = useState(initialLog?.snackCount ?? 0);
+  const [fingerFood, setFingerFood] = useState(initialLog?.fingerFood ?? false);
+  const [spoonPractice, setSpoonPractice] = useState(initialLog?.spoonPractice ?? false);
+  const [cupPractice, setCupPractice] = useState(initialLog?.cupPractice ?? false);
+  const [note, setNote] = useState(initialLog?.note ?? "");
+  const [saving, setSaving] = useState(false);
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    dismissMobileKeyboard();
+    setSaving(true);
+    try {
+      await onSave({
+        childId,
+        date: targetDate,
+        milkMl: milkMl === "" ? null : Number(milkMl),
+        snackCount,
+        fingerFood,
+        spoonPractice,
+        cupPractice,
+        note,
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="sheet-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="record-sheet compact-sheet" role="dialog" aria-modal="true" aria-labelledby="routine-log-title" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="sheet-handle" aria-hidden="true" />
+        <div className="sheet-heading">
+          <div><span className="overline">{formatKoreanDate(targetDate)}</span><h2 id="routine-log-title">하루 흐름 기록</h2></div>
+          <button className="close-button" type="button" onClick={onClose} aria-label="닫기"><X size={19} /></button>
+        </div>
+        <form className="feeding-plan-form routine-log-form" onSubmit={(event) => void submit(event)}>
+          <label className="form-field">
+            <span>하루 수유량</span>
+            <div className="input-with-unit"><input type="number" min="0" max="2000" inputMode="numeric" value={milkMl} onChange={(event) => setMilkMl(event.target.value)} placeholder="예: 650" /><b>ml</b></div>
+          </label>
+          <fieldset className="form-field">
+            <legend>간식 횟수</legend>
+            <div className="condition-picker routine-count-picker">
+              {[0, 1, 2, 3].map((count) => <button className={snackCount === count ? "is-selected" : ""} type="button" key={count} onClick={() => setSnackCount(count)}>{count}회</button>)}
+            </div>
+          </fieldset>
+          <fieldset className="form-field">
+            <legend>오늘 연습한 것</legend>
+            <div className="readiness-picker compact-readiness">
+              {[
+                { label: "핑거푸드", checked: fingerFood, setChecked: setFingerFood },
+                { label: "숟가락", checked: spoonPractice, setChecked: setSpoonPractice },
+                { label: "컵", checked: cupPractice, setChecked: setCupPractice },
+              ].map(({ label, checked, setChecked }) => (
+                <label className={checked ? "is-checked" : ""} key={label}>
+                  <input type="checkbox" checked={checked} onChange={(event) => setChecked(event.target.checked)} />
+                  <span>{label}</span>{checked && <Check size={17} aria-hidden="true" />}
+                </label>
+              ))}
+            </div>
+          </fieldset>
+          <label className="form-field"><span>메모</span><textarea rows={3} value={note} onChange={(event) => setNote(event.target.value)} placeholder="수유·간식 시간이나 먹기 연습에서 기억할 점" /></label>
+          <button className="primary-action" type="submit" disabled={saving}>{saving ? "가족 기록에 저장 중…" : "하루 흐름 저장"}</button>
+        </form>
+      </section>
+    </div>
+  );
+}
+
 function RecordSheet({
   targetDate,
   mealIndex,
@@ -2224,6 +2387,9 @@ export function MealApp() {
   const [todayId] = useState(() => toDateId(new Date()));
   const [recordTargetDate, setRecordTargetDate] = useState(() => toDateId(new Date()));
   const [records, setRecords] = useState<FamilyMealRecord[]>([]);
+  const [routineLogs, setRoutineLogs] = useState<DailyRoutineLog[]>([]);
+  const [routineLogOpen, setRoutineLogOpen] = useState(false);
+  const [routineTargetDate, setRoutineTargetDate] = useState(() => toDateId(new Date()));
   const [familyWorkspace, setFamilyWorkspace] = useState<FamilyWorkspace | null>(null);
   const [selectedDate, setSelectedDate] = useState(() => toDateId(new Date()));
   const [calendarCursor, setCalendarCursor] = useState<CalendarCursor>(() => {
@@ -2261,6 +2427,10 @@ export function MealApp() {
       mealHistory,
     ),
     [allIngredients, displayProfile, ingredientStates, mealHistory],
+  );
+  const currentAdaptiveReview = useMemo(
+    () => createAdaptiveReview(recommendationProfile(displayProfile), mealHistory, routineLogs),
+    [displayProfile, mealHistory, routineLogs],
   );
   const editingRecord = records.find((record) => record.date === recordTargetDate && record.mealIndex === recordTargetMealIndex) ?? null;
   const recordPlannedTime = editingRecord?.plannedTime
@@ -2310,6 +2480,7 @@ export function MealApp() {
       setIngredientStates([]);
       setMealHistory([]);
       setCustomIngredients([]);
+      setRoutineLogs([]);
       return;
     }
 
@@ -2326,17 +2497,20 @@ export function MealApp() {
         setIngredientStates([]);
         setMealHistory([]);
         setCustomIngredients(nextWorkspace ? await loadCustomIngredients(nextWorkspace.householdId) : []);
+        setRoutineLogs([]);
         return;
       }
-      const [nextRecords, recommendationInputs, nextCustomIngredients] = await Promise.all([
+      const [nextRecords, recommendationInputs, nextCustomIngredients, nextRoutineLogs] = await Promise.all([
         loadFamilyMealRecords(child.id),
         loadRecommendationInputs(child.id),
         loadCustomIngredients(nextWorkspace.householdId),
+        loadDailyRoutineLogs(child.id).catch(() => [] as DailyRoutineLog[]),
       ]);
       setRecords(nextRecords);
       setIngredientStates(recommendationInputs.states);
       setMealHistory(recommendationInputs.history);
       setCustomIngredients(nextCustomIngredients);
+      setRoutineLogs(nextRoutineLogs);
       setSettings({
         start: formatProfileStart(child),
         time: child.preferredMealTime,
@@ -2348,6 +2522,7 @@ export function MealApp() {
       setIngredientStates([]);
       setMealHistory([]);
       setCustomIngredients([]);
+      setRoutineLogs([]);
     }
   }, []);
 
@@ -2453,6 +2628,20 @@ export function MealApp() {
       showToast("식사 기록을 가족 공간에 저장했어요.");
     } catch {
       showToast("기록을 저장하지 못했어요. 잠시 후 다시 시도해주세요.");
+    }
+  };
+
+  const saveRoutineLog = async (log: DailyRoutineLog) => {
+    try {
+      await saveDailyRoutineLog(log);
+      await refreshFamilyData();
+      setRoutineLogOpen(false);
+      showToast("하루 흐름을 가족 기록에 저장했어요.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      showToast(/daily_routine_logs|schema cache|does not exist/i.test(message)
+        ? "Supabase에서 통합 기록 SQL을 한 번 실행해야 해요."
+        : "하루 흐름을 저장하지 못했어요. 잠시 후 다시 시도해주세요.");
     }
   };
 
@@ -2660,6 +2849,7 @@ export function MealApp() {
       settings,
       customIngredients,
       mealRecords: records,
+      dailyRoutineLogs: routineLogs,
       ingredientStates,
     };
     const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }));
@@ -2685,6 +2875,7 @@ export function MealApp() {
       setRecords([]);
       setIngredientStates([]);
       setMealHistory([]);
+      setRoutineLogs([]);
       setPreviewStarted(false);
       setActiveTab("today");
       setSelectedDate(todayId);
@@ -2703,6 +2894,7 @@ export function MealApp() {
       setRecords([]);
       setIngredientStates([]);
       setMealHistory([]);
+      setRoutineLogs([]);
       setCustomIngredients([]);
       setPreviewStarted(false);
       setActiveTab("today");
@@ -2749,8 +2941,10 @@ export function MealApp() {
               mealHistory={mealHistory}
               records={records}
               todayId={todayId}
+              routineLogs={routineLogs}
               onBack={displayProfile.stage === "prestart" ? () => setPreviewStarted(false) : undefined}
               onRecord={(mealIndex, ingredientIds) => { setRecordTargetMealIndex(mealIndex); setRecordIngredientIds(ingredientIds); setRecordTargetDate(todayId); setRecordOpen(true); }}
+              onReviewProgress={() => setFeedingPlanOpen(true)}
             />
           ) : (
             <TodayPrepare profile={displayProfile} onStart={() => setStartWeaningOpen(true)} onPreview={() => setPreviewStarted(true)} />
@@ -2762,6 +2956,7 @@ export function MealApp() {
         {activeTab === "records" && (
           <RecordsView
             records={records}
+            routineLogs={routineLogs}
             workspace={familyWorkspace}
             profile={displayProfile}
             ingredients={allIngredients}
@@ -2776,6 +2971,7 @@ export function MealApp() {
             onGoToday={goCalendarToday}
             onAddRecord={addRecordForDate}
             onEditRecord={(record) => { setRecordTargetMealIndex(record.mealIndex); setRecordIngredientIds(record.ingredientIds); setRecordTargetDate(record.date); setRecordOpen(true); }}
+            onEditRoutine={(date) => { setRoutineTargetDate(date); setRoutineLogOpen(true); }}
           />
         )}
         {activeTab === "profile" && (
@@ -2812,6 +3008,16 @@ export function MealApp() {
         <RecordSheet mealIndex={recordTargetMealIndex} plannedTime={recordPlannedTime} targetDate={recordTargetDate} initialRecord={editingRecord} onClose={() => { setRecordOpen(false); setRecordIngredientIds(null); }} onSave={saveRecord} />
       )}
 
+      {routineLogOpen && currentChild && (
+        <RoutineLogSheet
+          targetDate={routineTargetDate}
+          childId={currentChild.id}
+          initialLog={routineLogs.find((log) => log.date === routineTargetDate)}
+          onClose={() => setRoutineLogOpen(false)}
+          onSave={saveRoutineLog}
+        />
+      )}
+
       {selectedIngredient && (
         <IngredientSheet
           ingredient={selectedIngredient}
@@ -2845,7 +3051,7 @@ export function MealApp() {
       )}
 
       {feedingPlanOpen && (
-        <FeedingPlanSheet profile={displayProfile} onSave={saveProfile} onClose={() => setFeedingPlanOpen(false)} />
+        <FeedingPlanSheet profile={displayProfile} progression={currentAdaptiveReview.progression} onSave={saveProfile} onClose={() => setFeedingPlanOpen(false)} />
       )}
 
       {editingSetting === "time" && (

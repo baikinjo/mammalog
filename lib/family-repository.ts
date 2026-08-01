@@ -1,6 +1,7 @@
 import type {
   BabyProfile,
   ChildIngredientState,
+  DailyRoutineLog,
   DailyRecommendation,
   IngredientDefinition,
   MealHistoryEntry,
@@ -57,6 +58,47 @@ export interface SaveFamilyMealInput {
   servingGuide: string;
   textureGuide: string;
   recommendationReasons: string[];
+}
+
+export async function loadDailyRoutineLogs(childId: string): Promise<DailyRoutineLog[]> {
+  const { data, error } = await getSupabaseClient()
+    .from("daily_routine_logs")
+    .select("*")
+    .eq("child_id", childId)
+    .order("log_date", { ascending: false })
+    .limit(60);
+  if (error) throw error;
+  return (data ?? []).map((row) => ({
+    childId: row.child_id,
+    date: row.log_date,
+    milkMl: row.milk_ml,
+    snackCount: row.snack_count ?? 0,
+    cupPractice: Boolean(row.cup_practice),
+    spoonPractice: Boolean(row.spoon_practice),
+    fingerFood: Boolean(row.finger_food),
+    note: row.note ?? "",
+    updatedBy: row.updated_by,
+    updatedAt: row.updated_at,
+  }));
+}
+
+export async function saveDailyRoutineLog(log: DailyRoutineLog): Promise<void> {
+  const client = getSupabaseClient();
+  const { data: authData, error: authError } = await client.auth.getUser();
+  if (authError) throw authError;
+  const { error } = await client.from("daily_routine_logs").upsert({
+    child_id: log.childId,
+    log_date: log.date,
+    milk_ml: log.milkMl,
+    snack_count: log.snackCount,
+    cup_practice: log.cupPractice,
+    spoon_practice: log.spoonPractice,
+    finger_food: log.fingerFood,
+    note: log.note.trim() || null,
+    updated_by: authData.user?.id ?? null,
+    updated_at: new Date().toISOString(),
+  }, { onConflict: "child_id,log_date" });
+  if (error) throw error;
 }
 
 export async function saveChildIngredientState(
