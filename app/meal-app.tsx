@@ -35,6 +35,7 @@ import {
   loadFamilyWorkspace,
   saveFamilyMealRecord,
   sendMagicLink,
+  signInFamilyAnonymously,
   signOutFamily,
   type FamilyMealReaction,
   type FamilyMealRecord,
@@ -78,6 +79,20 @@ const reactionLabels: Record<FamilyMealReaction, string> = {
   texture_difficulty: "질감이 어려웠음",
   needs_review: "확인 필요",
 };
+
+function familyAuthMessage(error: unknown, fallback: string): string {
+  const code = (error as { code?: string } | null)?.code;
+  if (code === "over_email_send_rate_limit") {
+    return "무료 메일 발송 한도를 넘었어요. 잠시 기다리거나 ‘이 기기 바로 연결’을 이용해주세요.";
+  }
+  if (code === "email_address_not_authorized") {
+    return "Supabase 기본 메일은 등록된 관리자 주소에만 보낼 수 있어요. ‘이 기기 바로 연결’을 이용해주세요.";
+  }
+  if (code === "anonymous_provider_disabled") {
+    return "Supabase에서 익명 로그인을 한 번 켜야 해요. Authentication → Providers → Anonymous에서 활성화해주세요.";
+  }
+  return fallback;
+}
 
 const weekdayLabels = ["일", "월", "화", "수", "목", "금", "토"];
 const weekdayLongLabels = ["일요일", "월요일", "화요일", "수요일", "목요일", "금요일", "토요일"];
@@ -654,17 +669,17 @@ function FamilySyncSection({ onWorkspaceChange }: { onWorkspaceChange: () => voi
     const client = getSupabaseClient();
     client.auth.getSession().then(({ data }) => {
       if (!active) return;
-      const nextEmail = data.session?.user.email ?? null;
-      setUserEmail(nextEmail);
-      if (nextEmail) void refreshWorkspace();
+      const nextUserLabel = data.session?.user ? data.session.user.email ?? "이 기기 보호자" : null;
+      setUserEmail(nextUserLabel);
+      if (nextUserLabel) void refreshWorkspace();
       setLoading(false);
     });
     const { data } = client.auth.onAuthStateChange((_event, session) => {
       if (!active) return;
-      const nextEmail = session?.user.email ?? null;
-      setUserEmail(nextEmail);
+      const nextUserLabel = session?.user ? session.user.email ?? "이 기기 보호자" : null;
+      setUserEmail(nextUserLabel);
       setLoading(false);
-      if (nextEmail) window.setTimeout(() => void refreshWorkspace(), 0);
+      if (nextUserLabel) window.setTimeout(() => void refreshWorkspace(), 0);
       else {
         setWorkspace(null);
         onWorkspaceChange();
@@ -676,6 +691,19 @@ function FamilySyncSection({ onWorkspaceChange }: { onWorkspaceChange: () => voi
     };
   }, [configured, onWorkspaceChange, refreshWorkspace]);
 
+  const connectThisDevice = async () => {
+    setLoading(true);
+    setMessage(null);
+    try {
+      await signInFamilyAnonymously();
+      setMessage("이 기기를 보호자 계정으로 연결했어요. 이제 가족 코드를 입력해주세요.");
+    } catch (error) {
+      setMessage(familyAuthMessage(error, "이 기기를 연결하지 못했어요. 잠시 후 다시 시도해주세요."));
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const requestLogin = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setLoading(true);
@@ -683,8 +711,8 @@ function FamilySyncSection({ onWorkspaceChange }: { onWorkspaceChange: () => voi
     try {
       await sendMagicLink(email, `${window.location.origin}/`);
       setMessage("이메일로 로그인 링크를 보냈어요. 같은 기기에서 링크를 열어주세요.");
-    } catch {
-      setMessage("로그인 링크를 보내지 못했어요. 이메일 주소와 Supabase 설정을 확인해주세요.");
+    } catch (error) {
+      setMessage(familyAuthMessage(error, "로그인 링크를 보내지 못했어요. 이메일 주소를 확인해주세요."));
     } finally {
       setLoading(false);
     }
@@ -753,11 +781,18 @@ function FamilySyncSection({ onWorkspaceChange }: { onWorkspaceChange: () => voi
       {configured && loading && !userEmail && <p className="sync-copy">연결 상태를 확인하고 있어요…</p>}
 
       {configured && !loading && !userEmail && (
-        <form className="sync-form" onSubmit={requestLogin}>
-          <p className="sync-copy">부부가 각자 이메일로 로그인하면 아이폰과 아이패드에서 같은 기록을 볼 수 있어요.</p>
-          <label><span>이메일</span><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@example.com" required /></label>
-          <button className="primary-action" type="submit">로그인 링크 받기</button>
-        </form>
+        <div className="device-connect-panel">
+          <p className="sync-copy">이 아이폰을 보호자 기기로 연결한 뒤, 배우자에게 받은 가족 코드로 같은 기록에 참여하세요.</p>
+          <button className="primary-action" type="button" onClick={() => void connectThisDevice()}><Link2 size={17} aria-hidden="true" /> 이 기기 바로 연결</button>
+          <details className="email-login-details">
+            <summary>기존 이메일 계정으로 로그인</summary>
+            <form className="sync-form" onSubmit={requestLogin}>
+              <label><span>이메일</span><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@example.com" required /></label>
+              <button className="secondary-action" type="submit">로그인 링크 받기</button>
+              <small>무료 기본 메일은 발송 수와 받을 수 있는 주소가 제한될 수 있어요.</small>
+            </form>
+          </details>
+        </div>
       )}
 
       {userEmail && !workspace && (

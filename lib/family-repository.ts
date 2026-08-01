@@ -63,6 +63,11 @@ export async function sendMagicLink(email: string, redirectTo: string): Promise<
   if (error) throw error;
 }
 
+export async function signInFamilyAnonymously(): Promise<void> {
+  const { error } = await getSupabaseClient().auth.signInAnonymously();
+  if (error) throw error;
+}
+
 export async function signOutFamily(): Promise<void> {
   const { error } = await getSupabaseClient().auth.signOut();
   if (error) throw error;
