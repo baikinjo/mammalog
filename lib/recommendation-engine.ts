@@ -383,7 +383,6 @@ function textureForDay(
   const current = Math.max(minimum, profile.textureMm || minimum);
   if (recentDifficulty || condition === "cold" || condition === "diarrhea") return Math.min(current, maximum);
   if (condition === "mouthPain") return minimum;
-  if (profile.skills?.handlesCurrentTexture) return Math.min(maximum, current + 2);
   return Math.min(current, maximum);
 }
 

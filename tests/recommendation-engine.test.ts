@@ -221,7 +221,7 @@ test("builds a multi-meal middle-stage plan across all three rule layers", () =>
   assert.equal(plan.checks.find((check) => check.id === "daily-meat")?.met, true);
   assert.equal(plan.checks.find((check) => check.id === "leafy")?.met, true);
   assert.equal(plan.checks.find((check) => check.id === "yellow")?.met, true);
-  assert.equal(plan.checks.find((check) => check.id === "texture")?.detail, "5mm 안팎");
+  assert.equal(plan.checks.find((check) => check.id === "texture")?.detail, "3mm 안팎");
   const uniqueNewFoods = new Set(
     plan.meals.flatMap((meal) => meal.items.filter((item) => item.isNewExposure).map((item) => item.ingredient.id)),
   );

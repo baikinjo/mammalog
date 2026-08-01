@@ -2786,6 +2786,16 @@ export function MealApp() {
     setRecordOpen(true);
   };
 
+  const editRoutineForDate = (date: string) => {
+    if (!currentChild) {
+      setActiveTab("profile");
+      showToast("먼저 우리 아이 탭에서 가족 로그인을 연결해주세요.");
+      return;
+    }
+    setRoutineTargetDate(date);
+    setRoutineLogOpen(true);
+  };
+
   const updateSetting = async (value: string) => {
     if (!editingSetting) return;
     const settingKey = editingSetting;
@@ -2971,7 +2981,7 @@ export function MealApp() {
             onGoToday={goCalendarToday}
             onAddRecord={addRecordForDate}
             onEditRecord={(record) => { setRecordTargetMealIndex(record.mealIndex); setRecordIngredientIds(record.ingredientIds); setRecordTargetDate(record.date); setRecordOpen(true); }}
-            onEditRoutine={(date) => { setRoutineTargetDate(date); setRoutineLogOpen(true); }}
+            onEditRoutine={editRoutineForDate}
           />
         )}
         {activeTab === "profile" && (
