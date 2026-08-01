@@ -341,7 +341,7 @@ export async function saveChildProfile(
       texture_mm: profile.textureMm,
       preparation_style: profile.preparationStyle,
       temporary_condition: profile.temporaryCondition ?? "none",
-      development_skills: profile.skills ?? {},
+      development_skills: { ...(profile.skills ?? {}), mealTimes: profile.mealTimes ?? [] },
     })
     .select("id")
     .single();
@@ -506,6 +506,10 @@ export async function saveFamilyMealRecord(input: SaveFamilyMealInput): Promise<
 function mapChildRow(row: any): BabyProfile {
   const birthDate = new Date(`${row.birth_date}T00:00:00`);
   const ageMonths = Math.max(0, Math.floor((Date.now() - birthDate.getTime()) / (30.4375 * 86_400_000)));
+  const storedSkills = row.development_skills ?? {};
+  const storedMealTimes = Array.isArray(storedSkills.mealTimes)
+    ? storedSkills.mealTimes.filter((time: unknown): time is string => typeof time === "string")
+    : undefined;
   return {
     id: row.id,
     nickname: row.nickname,
@@ -518,10 +522,17 @@ function mapChildRow(row: any): BabyProfile {
     mealsPerDay: row.meals_per_day,
     snacksPerDay: row.snacks_per_day,
     preferredMealTime: String(row.preferred_meal_time).slice(0, 5),
+    mealTimes: storedMealTimes,
     milkMlPerDay: row.milk_ml_per_day,
     textureMm: row.texture_mm,
     preparationStyle: row.preparation_style,
     temporaryCondition: row.temporary_condition,
-    skills: row.development_skills,
+    skills: {
+      handlesCurrentTexture: Boolean(storedSkills.handlesCurrentTexture),
+      reachesAndGrasps: Boolean(storedSkills.reachesAndGrasps),
+      fingerFood: Boolean(storedSkills.fingerFood),
+      spoonPractice: Boolean(storedSkills.spoonPractice),
+      cupPractice: Boolean(storedSkills.cupPractice),
+    },
   };
 }

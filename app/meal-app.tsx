@@ -28,6 +28,7 @@ import {
   createBookBasedDayPlan,
   createInitialMealSuggestion,
   hasStartReadiness,
+  resolveMealTimes,
 } from "../lib/recommendation-engine";
 import type {
   BabyProfile,
@@ -479,14 +480,17 @@ function StartWeaningSheet({
     dismissMobileKeyboard();
     setSaving(true);
     try {
-      await onSave({
+      const nextProfile: BabyProfile = {
         ...profile,
         stage,
         weaningStartDate: startDate,
         mealsPerDay: guide.mealRange[0],
         snacksPerDay: guide.snackRange[0],
         textureMm: Math.max(profile.textureMm || 0, guide.textureMmRange[0]),
-      });
+        mealTimes: undefined,
+      };
+      const mealTimes = resolveMealTimes(nextProfile, nextProfile.mealsPerDay);
+      await onSave({ ...nextProfile, preferredMealTime: mealTimes[0], mealTimes });
     } finally {
       setSaving(false);
     }
@@ -597,7 +601,7 @@ function TodayMeal({
 
       <section className="day-intro">
         <div>
-          <span className="overline">오전 {suggestion.mealTime}</span>
+          <span className="overline">{formatKoreanTime(suggestion.mealTime)}</span>
           <h1>{bookPlan.currentTrial ? `${bookPlan.currentTrial.name} ${bookPlan.trialDay ?? 1}일차` : `${bookPlan.stageLabel} 오늘 한끼`}</h1>
           <p>{bookPlan.summaryReasons[0]}</p>
         </div>
@@ -944,6 +948,7 @@ function ProfileView({
   onWorkspaceChange: () => void;
 }) {
   const stageDescription = profile.stage === "prestart" ? "이유식 시작 전" : `${stageLabels[profile.stage]} 진행 중`;
+  const mealTimes = resolveMealTimes(profile, profile.mealsPerDay);
   return (
     <>
       <section className="profile-hero">
@@ -966,8 +971,8 @@ function ProfileView({
           <button type="button" aria-label="예상 시작일 수정" onClick={onEditProfile}><ChevronRight size={19} /></button>
         </div>
         <div className="setting-row">
-          <div><span>첫 끼 시간</span><strong>{formatKoreanTime(settings.time)}</strong></div>
-          <button type="button" aria-label="첫 끼 시간 수정" onClick={() => onEditSetting("time")}><ChevronRight size={19} /></button>
+          <div><span>끼니 시간</span><strong>{mealTimes.map(formatKoreanTime).join(" · ")}</strong></div>
+          <button type="button" aria-label="끼니 시간 수정" onClick={() => onEditSetting("time")}><ChevronRight size={19} /></button>
         </div>
         <div className="setting-row">
           <div><span>조리 방식</span><strong>{settings.style}</strong></div>
@@ -1729,40 +1734,66 @@ function SettingSheet({
   );
 }
 
-function TimeSettingSheet({
-  value,
+function MealTimesSettingSheet({
+  profile,
   onSave,
   onClose,
 }: {
-  value: string;
-  onSave: (value: string) => void;
+  profile: BabyProfile;
+  onSave: (profile: BabyProfile) => Promise<void>;
   onClose: () => void;
 }) {
-  const [time, setTime] = useState(value);
+  const mealCount = Math.max(1, Math.min(3, profile.mealsPerDay));
+  const [times, setTimes] = useState(() => resolveMealTimes(profile, mealCount));
+  const [saving, setSaving] = useState(false);
+  const minuteValues = times.map((time) => {
+    const [hour, minute] = time.split(":").map(Number);
+    return hour * 60 + minute;
+  });
+  const isOrdered = minuteValues.every((value, index) => index === 0 || value > minuteValues[index - 1]);
+  const hasShortGap = minuteValues.some((value, index) => index > 0 && value - minuteValues[index - 1] < 120);
+
+  const saveTimes = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    dismissMobileKeyboard();
+    if (!isOrdered) return;
+    setSaving(true);
+    try {
+      await onSave({ ...profile, preferredMealTime: times[0], mealTimes: times });
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <div className="sheet-backdrop" role="presentation" onMouseDown={onClose}>
       <section className="record-sheet compact-sheet" role="dialog" aria-modal="true" aria-labelledby="time-setting-title" onMouseDown={(event) => event.stopPropagation()}>
         <div className="sheet-handle" aria-hidden="true" />
         <div className="sheet-heading">
-          <div><span className="overline">우리 아이 설정</span><h2 id="time-setting-title">첫 끼 시간</h2></div>
+          <div><span className="overline">우리 아이 설정</span><h2 id="time-setting-title">끼니 시간</h2></div>
           <button className="close-button" type="button" onClick={onClose} aria-label="닫기"><X size={19} /></button>
         </div>
-        <form className="time-form" onSubmit={(event) => { event.preventDefault(); dismissMobileKeyboard(); onSave(time); }}>
-          <label htmlFor="first-meal-time">원하는 시간을 직접 설정하세요</label>
-          <div className="time-input-wrap">
-            <input
-              id="first-meal-time"
-              aria-label="첫 끼 시간"
-              type="time"
-              step="300"
-              value={time}
-              onInput={(event) => setTime(event.currentTarget.value)}
-              onChange={(event) => setTime(event.target.value)}
-            />
+        <form className="time-form" onSubmit={(event) => void saveTimes(event)}>
+          <p>책의 4시간 간격은 예시입니다. 실제 수면·수유 리듬에 맞게 각 끼니 시간을 조정하세요.</p>
+          <div className="meal-time-list">
+            {times.map((time, index) => (
+              <label className="meal-time-row" key={index}>
+                <span>{index + 1}번째 이유식</span>
+                <input
+                  aria-label={`${index + 1}번째 이유식 시간`}
+                  type="time"
+                  step="300"
+                  value={time}
+                  onInput={(event) => setTimes((current) => current.map((item, itemIndex) => itemIndex === index ? event.currentTarget.value : item))}
+                  onChange={(event) => setTimes((current) => current.map((item, itemIndex) => itemIndex === index ? event.target.value : item))}
+                />
+              </label>
+            ))}
           </div>
-          <p>아이폰과 아이패드에서는 기기의 시간 선택 다이얼이 열립니다.</p>
-          <button className="primary-action" type="submit" disabled={!time}>{formatKoreanTime(time)}에 저장</button>
+          {!isOrdered && <p className="time-warning">같은 날의 이른 시간부터 순서대로 설정해주세요.</p>}
+          {isOrdered && hasShortGap && <p className="time-warning">끼니 간격이 2시간보다 짧아요. 수유·수면 일정과 겹치지 않는지 확인해주세요.</p>}
+          <p>간식 시간은 저장한 끼니 사이로 자동 배치됩니다.</p>
+          <button className="primary-action" type="submit" disabled={!isOrdered || saving}>{saving ? "가족 공간에 저장 중…" : "끼니 시간 저장"}</button>
         </form>
       </section>
     </div>
@@ -2248,6 +2279,7 @@ export function MealApp() {
       setProfileEditorOpen(false);
       setFeedingPlanOpen(false);
       setStartWeaningOpen(false);
+      setEditingSetting(null);
       setActiveTab("profile");
       showToast("먼저 가족 공간을 연결해주세요.");
       return;
@@ -2265,6 +2297,7 @@ export function MealApp() {
       setProfileEditorOpen(false);
       setFeedingPlanOpen(false);
       setStartWeaningOpen(false);
+      setEditingSetting(null);
       setPreviewStarted(false);
       showToast("아이 정보를 가족 공간에 저장했어요.");
     } catch {
@@ -2417,7 +2450,7 @@ export function MealApp() {
       )}
 
       {editingSetting === "time" && (
-        <TimeSettingSheet value={settings.time} onSave={updateSetting} onClose={() => setEditingSetting(null)} />
+        <MealTimesSettingSheet profile={displayProfile} onSave={saveProfile} onClose={() => setEditingSetting(null)} />
       )}
 
       {editingSetting && editingSetting !== "time" && (

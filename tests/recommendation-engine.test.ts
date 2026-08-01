@@ -8,6 +8,7 @@ import {
   createBookBasedDayPlan,
   hasStartReadiness,
   inferWeaningStage,
+  resolveMealTimes,
 } from "../lib/recommendation-engine";
 import type {
   BabyProfile,
@@ -260,4 +261,29 @@ test("keeps acidic fruit out of a mouth-pain plan", () => {
 
   assert.equal(plannedIds.includes("apple"), false);
   assert.equal(plannedIds.includes("banana"), true);
+});
+
+test("replaces an overnight three-meal schedule with a daytime pattern", () => {
+  const profile: BabyProfile = { ...baseProfile, stage: "late", ageMonths: 9, mealsPerDay: 3, preferredMealTime: "02:00" };
+  assert.deepEqual(resolveMealTimes(profile, 3), ["09:00", "13:00", "17:00"]);
+  assert.deepEqual(resolveMealTimes({ ...profile, preferredMealTime: "14:00" }, 3), ["09:00", "13:00", "17:00"]);
+});
+
+test("uses three family-defined meal times without forcing four-hour gaps", () => {
+  const profile: BabyProfile = {
+    ...baseProfile,
+    stage: "late",
+    ageMonths: 9,
+    mealsPerDay: 3,
+    preferredMealTime: "08:30",
+    mealTimes: ["08:30", "12:15", "17:30"],
+  };
+  const plan = createBookBasedDayPlan(
+    profile,
+    ingredientCatalog,
+    ["rice", "beef", "cabbage", "pumpkin", "apple"].map(passed),
+    [],
+    new Date("2026-07-31T12:00:00.000Z"),
+  );
+  assert.deepEqual(plan.meals.map((meal) => meal.time), profile.mealTimes);
 });

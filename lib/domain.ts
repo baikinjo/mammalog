@@ -99,6 +99,7 @@ export interface BabyProfile {
   mealsPerDay: number;
   snacksPerDay?: number;
   preferredMealTime: string;
+  mealTimes?: string[];
   milkMlPerDay?: number | null;
   textureMm: number;
   preparationStyle: "cube" | "fresh" | "batch" | "mixed";

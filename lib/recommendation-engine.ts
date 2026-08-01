@@ -81,10 +81,57 @@ function withinLastDays(date: string, today: Date, days: number): boolean {
   return elapsed >= 0 && elapsed < days * 86_400_000;
 }
 
-function addHours(time: string, hours: number): string {
+function timeToMinutes(time: string): number | null {
+  if (!/^\d{2}:\d{2}$/.test(time)) return null;
   const [rawHour = "10", rawMinute = "00"] = time.split(":");
-  const total = (Number(rawHour) * 60 + Number(rawMinute) + hours * 60) % (24 * 60);
-  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+  const hour = Number(rawHour);
+  const minute = Number(rawMinute);
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+  return hour * 60 + minute;
+}
+
+function minutesToTime(total: number): string {
+  const safeTotal = Math.max(0, Math.min(23 * 60 + 59, Math.round(total)));
+  return `${String(Math.floor(safeTotal / 60)).padStart(2, "0")}:${String(safeTotal % 60).padStart(2, "0")}`;
+}
+
+function isOrderedSameDaySchedule(times: string[]): boolean {
+  const minutes = times.map(timeToMinutes);
+  return minutes.every((value): value is number => value != null)
+    && minutes.every((value, index) => index === 0 || value > minutes[index - 1]!);
+}
+
+export function resolveMealTimes(profile: BabyProfile, mealCount: number): string[] {
+  const count = Math.max(1, Math.min(3, mealCount));
+  const savedTimes = profile.mealTimes?.slice(0, count) ?? [];
+  if (savedTimes.length === count && isOrderedSameDaySchedule(savedTimes)) return savedTimes;
+
+  const preferredMinutes = timeToMinutes(profile.preferredMealTime);
+  const gapMinutes = 4 * 60;
+  const earliestFirstMeal = 6 * 60;
+  const latestFinalMeal = 20 * 60;
+  const latestFirstMeal = latestFinalMeal - (count - 1) * gapMinutes;
+  const safeFirstMeal = preferredMinutes != null
+    && preferredMinutes >= earliestFirstMeal
+    && preferredMinutes <= latestFirstMeal
+      ? preferredMinutes
+      : count === 1 ? 10 * 60 : 9 * 60;
+
+  return Array.from({ length: count }, (_, index) => minutesToTime(safeFirstMeal + index * gapMinutes));
+}
+
+function resolveSnackTimes(mealTimes: string[], snackCount: number): string[] {
+  const mealMinutes = mealTimes.map(timeToMinutes).filter((value): value is number => value != null);
+  const times: string[] = [];
+  for (let index = 0; index < snackCount; index += 1) {
+    if (index < mealMinutes.length - 1) {
+      times.push(minutesToTime((mealMinutes[index] + mealMinutes[index + 1]) / 2));
+    } else {
+      const lastMeal = mealMinutes.at(-1) ?? 17 * 60;
+      times.push(minutesToTime(lastMeal + (index - mealMinutes.length + 2) * 2 * 60));
+    }
+  }
+  return times;
 }
 
 export function hasStartReadiness(profile: BabyProfile): boolean {
@@ -353,9 +400,9 @@ function mealTitle(stage: Exclude<WeaningStage, "prestart">, items: IngredientDe
 }
 
 function makeMeal(
-  profile: BabyProfile,
   stage: Exclude<WeaningStage, "prestart">,
   index: number,
+  time: string,
   ingredients: IngredientDefinition[],
   newIngredientId: string | null,
   textureMm: number,
@@ -365,7 +412,7 @@ function makeMeal(
   return {
     index,
     type: "meal",
-    time: addHours(profile.preferredMealTime, (index - 1) * 4),
+    time,
     title: mealTitle(stage, ingredients),
     items: ingredients.map((item) => itemFor(item, newIngredientId)),
     servingGuide: `${guide.offerGramsRange[0]}~${guide.offerGramsRange[1]}g 범위에서 아이가 먹는 만큼`,
@@ -450,6 +497,7 @@ export function createBookBasedDayPlan(
   const dairy = byFoodGroup(passed, ["dairy"]);
   const textureMm = textureForDay(profile, history, guide.textureMmRange[0], guide.textureMmRange[1]);
   const mealCount = Math.max(guide.mealRange[0], Math.min(guide.mealRange[1], profile.mealsPerDay));
+  const mealTimes = resolveMealTimes(profile, mealCount);
   const fishCount = countRecentFish(definitions, history, today);
   const newId = currentTrial?.id ?? null;
   const meals: PlannedMeal[] = [];
@@ -484,11 +532,12 @@ export function createBookBasedDayPlan(
         : "아직 통과한 붉은 고기가 없어 도입 순서에서 우선 후보로 유지해요.",
       `현재 ${guide.label} 최소 질감에 맞춰 ${textureMm}mm 안팎으로 제안했어요.`,
     ];
-    meals.push(makeMeal(profile, stage, index, selected, index === 1 ? newId : null, textureMm, reasons));
+    meals.push(makeMeal(stage, index, mealTimes[index - 1], selected, index === 1 ? newId : null, textureMm, reasons));
   }
 
   const requestedSnackCount = profile.snacksPerDay ?? guide.snackRange[0];
   const snackCount = Math.max(guide.snackRange[0], Math.min(guide.snackRange[1], requestedSnackCount));
+  const snackTimes = resolveSnackTimes(mealTimes, snackCount);
   const snacks: PlannedMeal[] = [];
   for (let index = 1; index <= snackCount; index += 1) {
     const snackIngredient = chooseLeastRecent(index % 2 === 0 && dairy.length ? dairy : fruits, history, index - 1);
@@ -496,7 +545,7 @@ export function createBookBasedDayPlan(
     snacks.push({
       index,
       type: "snack",
-      time: addHours(profile.preferredMealTime, index * 4 - 2),
+      time: snackTimes[index - 1],
       title: snackIngredient.name,
       items: [itemFor(snackIngredient, null)],
       servingGuide: "다음 식사를 방해하지 않는 소량",
