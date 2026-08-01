@@ -390,6 +390,7 @@ button {
 
 .text-action { width: 100%; padding-top: 18px; border-top: 1px solid var(--line); }
 .back-action { width: max-content; margin: 2px 0 4px; }
+.start-action { margin: 4px 0 18px; }
 
 .tip-strip,
 .sync-row {
@@ -890,6 +891,21 @@ button {
 .profile-form .primary-action:disabled { cursor: not-allowed; opacity: 0.45; }
 
 .feeding-plan-form { display: grid; gap: 22px; margin-top: 24px; }
+.start-weaning-form { display: grid; gap: 20px; margin-top: 24px; }
+.start-guide { margin: 0; color: var(--ink-soft); font-size: 11px; line-height: 1.7; }
+.start-stage-picker { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.start-stage-picker button { display: grid; min-width: 0; min-height: 68px; align-content: center; gap: 5px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 15px; background: var(--paper); color: var(--ink); text-align: left; cursor: pointer; }
+.start-stage-picker button strong { font-size: 12px; }
+.start-stage-picker button small { color: var(--ink-soft); font-size: 9px; line-height: 1.45; }
+.start-stage-picker button.is-selected { border-color: rgba(80, 102, 78, 0.48); background: var(--sage-soft); color: var(--sage-deep); }
+.start-stage-picker button.is-selected small { color: var(--sage-deep); }
+.start-date-field input { min-height: 52px; width: 100%; min-width: 0; padding: 0 14px; border: 1px solid var(--line); border-radius: 15px; outline: 0; background: var(--canvas); color: var(--ink); font-size: 16px; }
+.start-date-field input:focus { border-color: var(--sage); box-shadow: 0 0 0 3px rgba(110, 132, 107, 0.13); }
+.start-readiness-note { display: flex; align-items: flex-start; gap: 10px; padding: 14px; border-radius: 15px; background: var(--sage-soft); color: var(--sage-deep); }
+.start-readiness-note.needs-review { background: var(--apricot-soft); color: #85583d; }
+.start-readiness-note > svg { flex: 0 0 auto; margin-top: 2px; }
+.start-readiness-note p { margin: 0; color: inherit; font-size: 10px; line-height: 1.65; }
+.start-weaning-form .primary-action:disabled { cursor: wait; opacity: 0.65; }
 .stage-picker,
 .condition-picker { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 7px; }
 .stage-picker button,

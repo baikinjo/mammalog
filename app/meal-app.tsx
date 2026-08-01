@@ -383,7 +383,15 @@ function preparationCountdown(profile: BabyProfile): string {
       : "월령과 네 가지 준비 신호를 확인한 뒤 시작해요.";
 }
 
-function TodayPrepare({ profile, onPreview }: { profile: BabyProfile; onPreview: () => void }) {
+function TodayPrepare({
+  profile,
+  onStart,
+  onPreview,
+}: {
+  profile: BabyProfile;
+  onStart: () => void;
+  onPreview: () => void;
+}) {
   const readinessCount = Object.values(profile.readiness ?? {}).filter(Boolean).length;
   return (
     <>
@@ -425,8 +433,11 @@ function TodayPrepare({ profile, onPreview }: { profile: BabyProfile; onPreview:
             <strong>채소 · 과일</strong>
           </div>
         </div>
+        <button className="primary-action start-action" type="button" onClick={onStart}>
+          이유식 시작하기
+        </button>
         <button className="text-action" type="button" onClick={onPreview}>
-          시작일 화면 미리보기 <ChevronRight size={17} aria-hidden="true" />
+          추천 화면만 미리보기 <ChevronRight size={17} aria-hidden="true" />
         </button>
       </section>
 
@@ -435,6 +446,89 @@ function TodayPrepare({ profile, onPreview }: { profile: BabyProfile; onPreview:
         <p>날짜가 되어도 자동으로 시작하지 않아요. 부모가 준비됐을 때 시작을 확정해요.</p>
       </section>
     </>
+  );
+}
+
+function StartWeaningSheet({
+  profile,
+  onSave,
+  onClose,
+}: {
+  profile: BabyProfile;
+  onSave: (profile: BabyProfile) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [stage, setStage] = useState<Exclude<WeaningStage, "prestart">>("initial");
+  const [startDate, setStartDate] = useState(profile.weaningStartDate ?? toDateId(new Date()));
+  const [saving, setSaving] = useState(false);
+  const readinessCount = Object.values(profile.readiness ?? {}).filter(Boolean).length;
+  const guide = getStageGuide(stage);
+  const stageChoices: Array<{
+    value: Exclude<WeaningStage, "prestart">;
+    title: string;
+    description: string;
+  }> = [
+    { value: "initial", title: "처음 시작", description: "초기 · 하루 1끼부터" },
+    { value: "middle", title: "이미 중기", description: "7~8개월 · 2끼부터" },
+    { value: "late", title: "이미 후기", description: "9~11개월 · 하루 3끼" },
+    { value: "completion", title: "이미 완료기", description: "12개월 이후 · 가족식 전환" },
+  ];
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    dismissMobileKeyboard();
+    setSaving(true);
+    try {
+      await onSave({
+        ...profile,
+        stage,
+        weaningStartDate: startDate,
+        mealsPerDay: guide.mealRange[0],
+        snacksPerDay: guide.snackRange[0],
+        textureMm: Math.max(profile.textureMm || 0, guide.textureMmRange[0]),
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="sheet-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="record-sheet compact-sheet" role="dialog" aria-modal="true" aria-labelledby="start-weaning-title" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="sheet-handle" aria-hidden="true" />
+        <div className="sheet-heading">
+          <div><span className="overline">오늘부터 실제 기록</span><h2 id="start-weaning-title">이유식 시작 설정</h2></div>
+          <button className="close-button" type="button" onClick={onClose} aria-label="닫기"><X size={19} /></button>
+        </div>
+        <form className="start-weaning-form" onSubmit={(event) => void submit(event)}>
+          <p className="start-guide">처음 시작한다면 초기, 이미 이유식을 먹고 있다면 현재 진행 단계를 선택하세요. 월령만으로 단계를 자동 확정하지는 않아요.</p>
+          <fieldset className="form-field">
+            <legend>현재 진행 상태</legend>
+            <div className="start-stage-picker">
+              {stageChoices.map((choice) => (
+                <button className={stage === choice.value ? "is-selected" : ""} type="button" key={choice.value} onClick={() => setStage(choice.value)} aria-pressed={stage === choice.value}>
+                  <strong>{choice.title}</strong>
+                  <small>{choice.description}</small>
+                </button>
+              ))}
+            </div>
+          </fieldset>
+          <label className="form-field start-date-field">
+            <span>실제 시작일</span>
+            <input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} required />
+          </label>
+          <div className={`start-readiness-note ${readinessCount < 4 ? "needs-review" : ""}`}>
+            <Check size={17} aria-hidden="true" />
+            <p><strong>현재 준비 신호 {readinessCount}/4</strong><br />{readinessCount < 4
+              ? "이미 진행 중이라면 현재 단계로 시작할 수 있어요. 처음 시작하는 경우에는 우리 아이 설정에서 준비 신호도 확인해주세요."
+              : "네 가지 준비 신호가 모두 확인되어 있어요."}</p>
+          </div>
+          <button className="primary-action" type="submit" disabled={!startDate || saving}>
+            {saving ? "가족 공간에 시작 상태 저장 중…" : `${stageLabels[stage]}로 시작하기`}
+          </button>
+        </form>
+      </section>
+    </div>
   );
 }
 
@@ -450,7 +544,7 @@ function TodayMeal({
   ingredients: IngredientDefinition[];
   ingredientStates: ChildIngredientState[];
   mealHistory: MealHistoryEntry[];
-  onBack: () => void;
+  onBack?: () => void;
   onRecord: (mealIndex: number, ingredientIds: string[]) => void;
 }) {
   const planProfile = useMemo(() => recommendationProfile(profile), [profile]);
@@ -495,9 +589,11 @@ function TodayMeal({
 
   return (
     <>
-      <button className="back-action" type="button" onClick={onBack}>
-        <ArrowLeft size={17} aria-hidden="true" /> 준비 화면
-      </button>
+      {onBack && (
+        <button className="back-action" type="button" onClick={onBack}>
+          <ArrowLeft size={17} aria-hidden="true" /> 준비 화면
+        </button>
+      )}
 
       <section className="day-intro">
         <div>
@@ -1797,6 +1893,7 @@ export function MealApp() {
   const [mealHistory, setMealHistory] = useState<MealHistoryEntry[]>([]);
   const [customIngredients, setCustomIngredients] = useState<IngredientDefinition[]>([]);
   const [addIngredientOpen, setAddIngredientOpen] = useState(false);
+  const [startWeaningOpen, setStartWeaningOpen] = useState(false);
   const [profileEditorOpen, setProfileEditorOpen] = useState(false);
   const [feedingPlanOpen, setFeedingPlanOpen] = useState(false);
   const [editingSetting, setEditingSetting] = useState<SettingKey | null>(null);
@@ -2150,6 +2247,7 @@ export function MealApp() {
     if (!familyWorkspace) {
       setProfileEditorOpen(false);
       setFeedingPlanOpen(false);
+      setStartWeaningOpen(false);
       setActiveTab("profile");
       showToast("먼저 가족 공간을 연결해주세요.");
       return;
@@ -2166,6 +2264,8 @@ export function MealApp() {
       await refreshFamilyData();
       setProfileEditorOpen(false);
       setFeedingPlanOpen(false);
+      setStartWeaningOpen(false);
+      setPreviewStarted(false);
       showToast("아이 정보를 가족 공간에 저장했어요.");
     } catch {
       showToast("아이 정보를 저장하지 못했어요. 잠시 후 다시 시도해주세요.");
@@ -2219,17 +2319,17 @@ export function MealApp() {
 
       <main id="top" className="app-main">
         {activeTab === "today" && (
-          previewStarted ? (
+          displayProfile.stage !== "prestart" || previewStarted ? (
             <TodayMeal
               profile={displayProfile}
               ingredients={allIngredients}
               ingredientStates={ingredientStates}
               mealHistory={mealHistory}
-              onBack={() => setPreviewStarted(false)}
+              onBack={displayProfile.stage === "prestart" ? () => setPreviewStarted(false) : undefined}
               onRecord={(mealIndex, ingredientIds) => { setRecordTargetMealIndex(mealIndex); setRecordIngredientIds(ingredientIds); setRecordTargetDate(todayId); setRecordOpen(true); }}
             />
           ) : (
-            <TodayPrepare profile={displayProfile} onPreview={() => setPreviewStarted(true)} />
+            <TodayPrepare profile={displayProfile} onStart={() => setStartWeaningOpen(true)} onPreview={() => setPreviewStarted(true)} />
           )
         )}
         {activeTab === "ingredients" && (
@@ -2303,6 +2403,10 @@ export function MealApp() {
       )}
 
       {addIngredientOpen && <AddIngredientSheet ingredients={allIngredients} onAdd={addIngredient} onClose={() => setAddIngredientOpen(false)} />}
+
+      {startWeaningOpen && (
+        <StartWeaningSheet profile={displayProfile} onSave={saveProfile} onClose={() => setStartWeaningOpen(false)} />
+      )}
 
       {profileEditorOpen && (
         <BabyProfileSheet profile={displayProfile} onSave={saveProfile} onClose={() => setProfileEditorOpen(false)} />
