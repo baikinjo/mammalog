@@ -137,6 +137,90 @@ create policy "members can manage daily recommendations"
   using (public.can_access_child(child_id))
   with check (public.can_access_child(child_id));
 
+create or replace function public.create_household_with_owner(
+  household_name text,
+  member_display_name text
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  new_household_id uuid;
+begin
+  if auth.uid() is null then
+    raise exception 'Authentication required';
+  end if;
+  insert into public.households (name, owner_id)
+  values (coalesce(nullif(trim(household_name), ''), '우리 가족'), auth.uid())
+  returning id into new_household_id;
+
+  insert into public.household_members (household_id, user_id, display_name, role)
+  values (new_household_id, auth.uid(), coalesce(nullif(trim(member_display_name), ''), '보호자'), 'owner');
+  return new_household_id;
+end;
+$$;
+
+create or replace function public.create_household_invite(target_household_id uuid)
+returns text
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  new_code text;
+begin
+  if not exists (
+    select 1 from public.households
+    where id = target_household_id and owner_id = auth.uid()
+  ) then
+    raise exception 'Only the household owner can create an invite';
+  end if;
+  new_code := upper(substr(encode(gen_random_bytes(6), 'hex'), 1, 10));
+  update public.households
+  set invite_code_hash = encode(digest(new_code, 'sha256'), 'hex'),
+      invite_expires_at = now() + interval '7 days',
+      updated_at = now()
+  where id = target_household_id;
+  return new_code;
+end;
+$$;
+
+create or replace function public.join_household_with_code(
+  invite_code text,
+  member_display_name text
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  target_id uuid;
+begin
+  if auth.uid() is null then
+    raise exception 'Authentication required';
+  end if;
+  select id into target_id
+  from public.households
+  where invite_code_hash = encode(digest(upper(trim(invite_code)), 'sha256'), 'hex')
+    and invite_expires_at > now();
+  if target_id is null then
+    raise exception 'Invite code is invalid or expired';
+  end if;
+  insert into public.household_members (household_id, user_id, display_name, role)
+  values (target_id, auth.uid(), coalesce(nullif(trim(member_display_name), ''), '보호자'), 'parent')
+  on conflict (household_id, user_id) do update
+    set display_name = excluded.display_name;
+  return target_id;
+end;
+$$;
+
+grant execute on function public.create_household_with_owner(text, text) to authenticated;
+grant execute on function public.create_household_invite(uuid) to authenticated;
+grant execute on function public.join_household_with_code(text, text) to authenticated;
+
 insert into public.stage_guides
   (stage, label, age_months, milk_ml_range, meal_range, snack_range, offer_grams_range,
    meat_grams_range, texture_mm_range, texture_description, grain_description,
