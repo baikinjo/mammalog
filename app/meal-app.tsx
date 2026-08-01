@@ -190,6 +190,11 @@ function formatKoreanTime(time: string) {
   return `${period} ${displayHour}:${minute}`;
 }
 
+function dismissMobileKeyboard() {
+  const activeElement = document.activeElement;
+  if (activeElement instanceof HTMLElement) activeElement.blur();
+}
+
 function createMonthDays(cursor: CalendarCursor) {
   const total = new Date(cursor.year, cursor.month + 1, 0).getDate();
   return Array.from({ length: total }, (_, index): CalendarDay => {
@@ -708,6 +713,7 @@ function FamilySyncSection({ onWorkspaceChange }: { onWorkspaceChange: () => voi
 
   const requestLogin = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    dismissMobileKeyboard();
     setLoading(true);
     setMessage(null);
     try {
@@ -722,6 +728,7 @@ function FamilySyncSection({ onWorkspaceChange }: { onWorkspaceChange: () => voi
 
   const createWorkspace = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    dismissMobileKeyboard();
     setLoading(true);
     setMessage(null);
     try {
@@ -737,6 +744,7 @@ function FamilySyncSection({ onWorkspaceChange }: { onWorkspaceChange: () => voi
 
   const joinWorkspace = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    dismissMobileKeyboard();
     setLoading(true);
     setMessage(null);
     try {
@@ -916,6 +924,7 @@ function AddIngredientSheet({
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    dismissMobileKeyboard();
     const trimmedName = name.trim();
     if (trimmedName && assetId && !matchingIngredient) onAdd(trimmedName, category, assetId);
   };
@@ -1030,7 +1039,7 @@ function TimeSettingSheet({
           <div><span className="overline">우리 아이 설정</span><h2 id="time-setting-title">첫 끼 시간</h2></div>
           <button className="close-button" type="button" onClick={onClose} aria-label="닫기"><X size={19} /></button>
         </div>
-        <form className="time-form" onSubmit={(event) => { event.preventDefault(); onSave(time); }}>
+        <form className="time-form" onSubmit={(event) => { event.preventDefault(); dismissMobileKeyboard(); onSave(time); }}>
           <label htmlFor="first-meal-time">원하는 시간을 직접 설정하세요</label>
           <div className="time-input-wrap">
             <input
@@ -1071,6 +1080,7 @@ function RecordSheet({
   const [saving, setSaving] = useState(false);
 
   const submitRecord = async () => {
+    dismissMobileKeyboard();
     setSaving(true);
     try {
       await onSave({ amount, reaction, note });

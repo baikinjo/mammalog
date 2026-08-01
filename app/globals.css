@@ -723,7 +723,7 @@ button {
 .sync-form label > span,
 .sync-setup > label > span { color: var(--ink-soft); font-size: 10px; font-weight: 700; }
 .sync-form input,
-.sync-setup input { width: 100%; min-height: 48px; padding: 0 14px; border: 1px solid var(--line); border-radius: 15px; outline: 0; background: var(--canvas); color: var(--ink); font-size: 12px; }
+.sync-setup input { width: 100%; min-height: 48px; padding: 0 14px; border: 1px solid var(--line); border-radius: 15px; outline: 0; background: var(--canvas); color: var(--ink); font-size: 16px; }
 .sync-form input:focus,
 .sync-setup input:focus { border-color: var(--sage); box-shadow: 0 0 0 3px rgba(110, 132, 107, 0.13); }
 .sync-form .primary-action { min-height: 49px; }
@@ -812,7 +812,7 @@ button {
 .form-field { display: grid; gap: 9px; margin: 0; padding: 0; border: 0; }
 .form-field > span,
 .form-field > legend { padding: 0; font-size: 12px; font-weight: 700; }
-.ingredient-form input { min-height: 52px; width: 100%; padding: 0 15px; border: 1px solid var(--line); border-radius: 15px; outline: 0; background: var(--canvas); color: var(--ink); }
+.ingredient-form input { min-height: 52px; width: 100%; padding: 0 15px; border: 1px solid var(--line); border-radius: 15px; outline: 0; background: var(--canvas); color: var(--ink); font-size: 16px; }
 .ingredient-form input:focus { border-color: var(--sage); box-shadow: 0 0 0 3px rgba(110, 132, 107, 0.13); }
 .category-picker { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .category-picker button { min-height: 42px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 13px; background: var(--paper); color: var(--ink-soft); font-size: 11px; cursor: pointer; }
@@ -860,7 +860,7 @@ button {
 .reaction-options input:checked + span { border-color: var(--sage); background: var(--sage-soft); color: var(--sage-deep); font-weight: 700; }
 
 .note-field { display: grid; margin: 26px 0 20px; }
-.note-field textarea { resize: vertical; padding: 14px; border: 1px solid var(--line); border-radius: 16px; outline: 0; background: var(--canvas); color: var(--ink); font-size: 12px; line-height: 1.6; }
+.note-field textarea { resize: vertical; padding: 14px; border: 1px solid var(--line); border-radius: 16px; outline: 0; background: var(--canvas); color: var(--ink); font-size: 16px; line-height: 1.6; }
 .note-field textarea:focus { border-color: var(--sage); box-shadow: 0 0 0 3px rgba(110, 132, 107, 0.13); }
 
 .toast {
