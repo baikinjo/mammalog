@@ -525,7 +525,7 @@ export function createBookBasedDayPlan(
 
     const reasons = [
       index === 1 && currentTrial
-        ? `${currentTrial.name} ${trialDay}/${guide.newFoodIntervalDays[1]}일차로, 나머지는 먹어본 재료를 우선했어요.`
+        ? `${currentTrial.name} ${trialDay}/${guide.newFoodIntervalDays[1]}일차예요. 새 재료만 추가하고 앞서 통과한 재료는 계속 유지했어요.`
         : "오늘의 식품군 균형과 최근 반복을 함께 보고 조합했어요.",
       redMeats.length || currentTrial?.foodGroup === "redMeat"
         ? `책의 매일 고기 원칙과 ${guide.meatGramsPerDay[0]}~${guide.meatGramsPerDay[1]}g 목표를 반영했어요.`
@@ -604,24 +604,18 @@ export function createInitialMealSuggestion(
   };
   const plan = createBookBasedDayPlan(initialProfile, definitions, states, history);
   const meal = plan.meals[0];
-  const rice = definitions.find((item) => item.id === "rice");
-  const oatmeal = definitions.find((item) => item.id === "oatmeal");
-  const firstDayGrains = [rice, oatmeal].filter((item): item is IngredientDefinition => Boolean(item));
-  const useBookOatmealException = plan.currentTrial?.id === "rice" && history.length === 0;
-  const ingredients = useBookOatmealException ? firstDayGrains : meal.items.map((item) => item.ingredient);
+  const ingredients = meal.items.map((item) => item.ingredient);
 
   return {
-    title: useBookOatmealException ? "쌀·오트밀죽" : meal.title,
+    title: meal.title,
     mealTime: meal.time,
     servingGuide: "한두 숟가락부터, 아이가 먹는 만큼",
     textureGuide: getStageGuide("initial").textureDescription,
     ingredients,
     testLabel: plan.currentTrial ? `${introductionLabels[plan.currentTrial.introductionGroup]} ${plan.trialDay}/3일` : null,
     reasons: [
-      "책의 첫 식품군 순서와 새 재료 관찰 규칙을 적용했어요.",
-      useBookOatmealException
-        ? "오트밀은 책에서 쌀과 동시에 섞을 수 있다고 제시한 예외이며, 쌀만으로 시작하도록 바꿀 수도 있어요."
-        : plan.summaryReasons[1],
+      "책의 첫 식품군 순서와 새 재료 관찰 규칙을 적용했어요. 첫 3일은 쌀부터 시작해요.",
+      "새 재료를 열 때는 앞서 통과한 재료를 빼지 않고 한 가지씩 계속 더해요.",
       "먹는 양보다 숟가락과 새로운 질감에 익숙해지는 경험을 우선해요.",
     ],
   };

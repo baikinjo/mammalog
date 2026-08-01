@@ -6,6 +6,7 @@ import {
   chooseNextIngredient,
   countRecentFish,
   createBookBasedDayPlan,
+  createInitialMealSuggestion,
   hasStartReadiness,
   inferWeaningStage,
   resolveMealTimes,
@@ -113,6 +114,54 @@ test("reproduces the five-group introduction flow over the first fifteen days", 
       `${group} should be passed`,
     );
   }
+});
+
+test("keeps earlier foods while adding only one new ingredient during the initial sequence", () => {
+  const day1 = createBookBasedDayPlan(
+    baseProfile,
+    ingredientCatalog,
+    [],
+    [],
+    new Date("2026-07-01T12:00:00.000Z"),
+  );
+  assert.deepEqual(day1.meals[0].items.map((item) => item.ingredient.id), ["rice"]);
+  assert.deepEqual(day1.meals[0].items.filter((item) => item.isNewExposure).map((item) => item.ingredient.id), ["rice"]);
+
+  const day4 = createBookBasedDayPlan(
+    baseProfile,
+    ingredientCatalog,
+    [passed("rice"), { ingredientId: "beef", status: "testing", testDay: 1, exposureCount: 0 }],
+    [],
+    new Date("2026-07-04T12:00:00.000Z"),
+  );
+  assert.deepEqual(day4.meals[0].items.map((item) => item.ingredient.id), ["rice", "beef"]);
+  assert.deepEqual(day4.meals[0].items.filter((item) => item.isNewExposure).map((item) => item.ingredient.id), ["beef"]);
+
+  const day7 = createBookBasedDayPlan(
+    baseProfile,
+    ingredientCatalog,
+    [
+      passed("rice"),
+      passed("beef"),
+      { ingredientId: "cabbage", status: "testing", testDay: 1, exposureCount: 0 },
+    ],
+    [],
+    new Date("2026-07-07T12:00:00.000Z"),
+  );
+  assert.deepEqual(day7.meals[0].items.map((item) => item.ingredient.id), ["rice", "beef", "cabbage"]);
+  assert.deepEqual(day7.meals[0].items.filter((item) => item.isNewExposure).map((item) => item.ingredient.id), ["cabbage"]);
+  assert.match(day7.meals[0].reasons[0], /앞서 통과한 재료는 계속 유지/);
+});
+
+test("prestart preview defaults to rice only for the first three-day trial", () => {
+  const suggestion = createInitialMealSuggestion(
+    { ...baseProfile, stage: "prestart" },
+    ingredientCatalog,
+    [],
+    [],
+  );
+  assert.deepEqual(suggestion.ingredients.map((ingredient) => ingredient.id), ["rice"]);
+  assert.equal(suggestion.title, "쌀죽");
 });
 
 test("never recommends a suspected-reaction ingredient automatically", () => {
