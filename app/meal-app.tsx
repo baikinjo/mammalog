@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   ArrowLeft,
   Baby,
@@ -9,6 +9,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Download,
+  Link2,
+  LogOut,
   House,
   Info,
   Plus,
@@ -24,6 +26,16 @@ import {
 } from "../lib/demo-data";
 import { createBookBasedDayPlan, createInitialMealSuggestion } from "../lib/recommendation-engine";
 import type { IngredientCategory, IngredientDefinition, IntroductionGroup } from "../lib/domain";
+import {
+  createFamilyInvite,
+  createFamilyWorkspace,
+  joinFamilyWithCode,
+  loadFamilyWorkspace,
+  sendMagicLink,
+  signOutFamily,
+  type FamilyWorkspace,
+} from "../lib/family-repository";
+import { getSupabaseClient, isSupabaseConfigured } from "../lib/supabase-client";
 
 type Tab = "today" | "ingredients" | "records" | "profile";
 type Amount = "taste" | "quarter" | "half" | "most";
@@ -351,7 +363,7 @@ function TodayMeal({
         <div className="avatar-pair" aria-hidden="true">
           <span>아</span><span>엄</span>
         </div>
-        <p><strong>가족과 동기화 준비됨</strong><br />두 계정에서 같은 식단을 확인하게 됩니다.</p>
+        <p><strong>가족 동기화를 지원해요</strong><br />우리 아이 탭에서 각자 이메일로 연결하면 같은 기록을 보게 됩니다.</p>
       </section>
     </>
   );
@@ -575,21 +587,185 @@ function ProfileView({
         </div>
       </section>
 
-      <section className="section-card">
-        <div className="section-heading">
-          <div>
-            <span className="overline">함께 보는 사람</span>
-            <h2>가족 구성원</h2>
-          </div>
-        </div>
-        <div className="family-list">
-          <div><span className="family-avatar sage">아</span><p><strong>아빠</strong><br /><small>관리자</small></p></div>
-          <div><span className="family-avatar apricot">엄</span><p><strong>엄마</strong><br /><small>관리자</small></p></div>
-        </div>
-      </section>
+      <FamilySyncSection />
 
       <button className="export-button" type="button" onClick={onExport}><Download size={17} aria-hidden="true" /> 내 데이터 내보내기</button>
     </>
+  );
+}
+
+function FamilySyncSection() {
+  const configured = isSupabaseConfigured();
+  const [email, setEmail] = useState("");
+  const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [displayName, setDisplayName] = useState("");
+  const [familyName, setFamilyName] = useState("우리 가족");
+  const [inviteInput, setInviteInput] = useState("");
+  const [inviteCode, setInviteCode] = useState<string | null>(null);
+  const [workspace, setWorkspace] = useState<FamilyWorkspace | null>(null);
+  const [loading, setLoading] = useState(configured);
+  const [message, setMessage] = useState<string | null>(null);
+  const [needsDatabase, setNeedsDatabase] = useState(false);
+
+  const refreshWorkspace = useCallback(async () => {
+    try {
+      setNeedsDatabase(false);
+      setWorkspace(await loadFamilyWorkspace());
+    } catch (error) {
+      const description = error instanceof Error ? error.message : String(error);
+      setNeedsDatabase(/relation|schema cache|household_members/i.test(description));
+      setWorkspace(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!configured) return;
+    let active = true;
+    const client = getSupabaseClient();
+    client.auth.getSession().then(({ data }) => {
+      if (!active) return;
+      const nextEmail = data.session?.user.email ?? null;
+      setUserEmail(nextEmail);
+      if (nextEmail) void refreshWorkspace();
+      setLoading(false);
+    });
+    const { data } = client.auth.onAuthStateChange((_event, session) => {
+      if (!active) return;
+      const nextEmail = session?.user.email ?? null;
+      setUserEmail(nextEmail);
+      setLoading(false);
+      if (nextEmail) window.setTimeout(() => void refreshWorkspace(), 0);
+      else setWorkspace(null);
+    });
+    return () => {
+      active = false;
+      data.subscription.unsubscribe();
+    };
+  }, [configured, refreshWorkspace]);
+
+  const requestLogin = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setLoading(true);
+    setMessage(null);
+    try {
+      await sendMagicLink(email, `${window.location.origin}/`);
+      setMessage("이메일로 로그인 링크를 보냈어요. 같은 기기에서 링크를 열어주세요.");
+    } catch {
+      setMessage("로그인 링크를 보내지 못했어요. 이메일 주소와 Supabase 설정을 확인해주세요.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const createWorkspace = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setLoading(true);
+    setMessage(null);
+    try {
+      await createFamilyWorkspace(familyName, displayName);
+      await refreshWorkspace();
+      setMessage("가족 공간을 만들었어요.");
+    } catch {
+      setMessage("가족 공간을 만들지 못했어요. 데이터베이스 설정을 먼저 확인해주세요.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const joinWorkspace = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setLoading(true);
+    setMessage(null);
+    try {
+      await joinFamilyWithCode(inviteInput, displayName);
+      await refreshWorkspace();
+      setMessage("가족 공간에 연결했어요.");
+    } catch {
+      setMessage("초대 코드가 다르거나 만료됐어요.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const makeInvite = async () => {
+    if (!workspace) return;
+    setLoading(true);
+    try {
+      setInviteCode(await createFamilyInvite(workspace.householdId));
+      setMessage("7일 동안 사용할 수 있는 초대 코드를 만들었어요.");
+    } catch {
+      setMessage("초대 코드는 가족 공간을 만든 계정에서 생성할 수 있어요.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const copyInvite = async () => {
+    if (!inviteCode) return;
+    await navigator.clipboard.writeText(inviteCode);
+    setMessage("초대 코드를 복사했어요.");
+  };
+
+  return (
+    <section className="section-card family-sync-card">
+      <div className="section-heading">
+        <div>
+          <span className="overline">함께 보는 사람</span>
+          <h2>가족 동기화</h2>
+        </div>
+        <span className={`sync-status ${workspace ? "is-connected" : ""}`}>{workspace ? "연결됨" : configured ? "연결 대기" : "설정 전"}</span>
+      </div>
+
+      {!configured && <p className="sync-copy">공유 저장소 연결 정보가 설정되면 이메일 로그인을 사용할 수 있어요.</p>}
+      {configured && loading && !userEmail && <p className="sync-copy">연결 상태를 확인하고 있어요…</p>}
+
+      {configured && !loading && !userEmail && (
+        <form className="sync-form" onSubmit={requestLogin}>
+          <p className="sync-copy">부부가 각자 이메일로 로그인하면 아이폰과 아이패드에서 같은 기록을 볼 수 있어요.</p>
+          <label><span>이메일</span><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@example.com" required /></label>
+          <button className="primary-action" type="submit">로그인 링크 받기</button>
+        </form>
+      )}
+
+      {userEmail && !workspace && (
+        <div className="sync-setup">
+          <p className="signed-email"><Check size={14} aria-hidden="true" /> {userEmail}</p>
+          {needsDatabase && <p className="setup-warning">앱 연결은 완료됐어요. 이제 준비된 데이터베이스 SQL을 한 번 실행하면 가족 공간을 만들 수 있어요.</p>}
+          <label><span>화면에 보일 이름</span><input value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="아빠 또는 엄마" /></label>
+          <form className="sync-form compact" onSubmit={createWorkspace}>
+            <label><span>새 가족 이름</span><input value={familyName} onChange={(event) => setFamilyName(event.target.value)} required /></label>
+            <button className="primary-action" type="submit" disabled={!displayName.trim()}>새 가족 공간 만들기</button>
+          </form>
+          <div className="sync-divider"><span>또는</span></div>
+          <form className="sync-form compact" onSubmit={joinWorkspace}>
+            <label><span>배우자에게 받은 초대 코드</span><input value={inviteInput} onChange={(event) => setInviteInput(event.target.value.toUpperCase())} placeholder="10자리 코드" maxLength={10} /></label>
+            <button className="secondary-action" type="submit" disabled={!displayName.trim() || inviteInput.length < 10}>초대 코드로 참여</button>
+          </form>
+        </div>
+      )}
+
+      {userEmail && workspace && (
+        <div className="sync-connected">
+          <p className="signed-email"><Check size={14} aria-hidden="true" /> {workspace.householdName} · {userEmail}</p>
+          <div className="family-list">
+            {workspace.members.map((member, index) => (
+              <div key={member.userId}>
+                <span className={`family-avatar ${index % 2 ? "apricot" : "sage"}`}>{member.displayName.slice(0, 1)}</span>
+                <p><strong>{member.displayName}</strong><br /><small>{member.role === "owner" ? "가족 관리자" : "보호자"}</small></p>
+              </div>
+            ))}
+          </div>
+          {inviteCode ? (
+            <button className="invite-code" type="button" onClick={copyInvite}><span>{inviteCode}</span><small>눌러서 복사</small></button>
+          ) : (
+            <button className="secondary-action" type="button" onClick={makeInvite}><Link2 size={16} /> 배우자 초대 코드 만들기</button>
+          )}
+          <button className="signout-action" type="button" onClick={() => void signOutFamily()}><LogOut size={14} /> 이 기기에서 로그아웃</button>
+        </div>
+      )}
+
+      {message && <p className="sync-message" role="status">{message}</p>}
+    </section>
   );
 }
 
