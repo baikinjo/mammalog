@@ -167,6 +167,7 @@ export async function loadCustomIngredients(householdId: string): Promise<Ingred
     .select("*")
     .eq("household_id", householdId)
     .eq("is_custom", true)
+    .eq("is_active", true)
     .order("created_at");
   if (error) throw error;
 
@@ -212,6 +213,40 @@ export async function saveCustomIngredient(
     is_custom: true,
     is_active: true,
   });
+  if (error) throw error;
+}
+
+export async function updateCustomIngredient(
+  householdId: string,
+  ingredient: IngredientDefinition,
+): Promise<void> {
+  const { error } = await getSupabaseClient()
+    .from("ingredients")
+    .update({
+      name: ingredient.name,
+      asset_id: ingredient.assetId ?? null,
+      category: ingredient.category,
+      introduction_group: ingredient.introductionGroup,
+      minimum_stage: ingredient.minimumStage,
+      minimum_age_months: ingredient.minimumAgeMonths ?? 6,
+      book_guidance: ingredient.bookGuidance ?? "가족이 직접 추가한 재료예요. 도입 시기와 반응을 직접 기록해요.",
+    })
+    .eq("id", ingredient.id)
+    .eq("household_id", householdId)
+    .eq("is_custom", true);
+  if (error) throw error;
+}
+
+export async function archiveCustomIngredient(
+  householdId: string,
+  ingredientId: string,
+): Promise<void> {
+  const { error } = await getSupabaseClient()
+    .from("ingredients")
+    .update({ is_active: false })
+    .eq("id", ingredientId)
+    .eq("household_id", householdId)
+    .eq("is_custom", true);
   if (error) throw error;
 }
 

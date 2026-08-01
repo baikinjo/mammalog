@@ -44,6 +44,7 @@ import type {
   WeaningStage,
 } from "../lib/domain";
 import {
+  archiveCustomIngredient,
   createFamilyInvite,
   createFamilyWorkspace,
   ensureDefaultChild,
@@ -57,6 +58,7 @@ import {
   saveCustomIngredient,
   saveDailyRecommendation,
   saveFamilyMealRecord,
+  updateCustomIngredient,
   sendMagicLink,
   signInFamilyAnonymously,
   signOutFamily,
@@ -105,7 +107,7 @@ const reactionLabels: Record<FamilyMealReaction, string> = {
 
 const ingredientStatusLabels: Record<ChildIngredientState["status"], string> = {
   locked: "아직 잠김",
-  ready: "도입 가능",
+  ready: "미도입",
   testing: "도입 중",
   passed: "통과",
   rejected: "맛 거부 기록",
@@ -1062,11 +1064,20 @@ function FamilySyncSection({ onWorkspaceChange }: { onWorkspaceChange: () => voi
 
 function IngredientSheet({
   ingredient,
+  state,
+  onSaveState,
+  onEditCustom,
   onClose,
 }: {
   ingredient: IngredientDefinition;
+  state?: ChildIngredientState;
+  onSaveState: (status: ChildIngredientState["status"], testDay: number | null) => Promise<void>;
+  onEditCustom?: () => void;
   onClose: () => void;
 }) {
+  const [status, setStatus] = useState<ChildIngredientState["status"]>(state?.status ?? "ready");
+  const [testDay, setTestDay] = useState(state?.testDay ?? 1);
+  const [saving, setSaving] = useState(false);
   const guidance = ingredient.id.startsWith("custom-")
     ? "직접 추가한 재료예요. 가족의 계획에 맞춰 도입 시기를 정할 수 있어요."
     : ingredient.bookGuidance ?? "앞선 재료에 적응한 뒤 한 가지씩 열어요.";
@@ -1090,9 +1101,42 @@ function IngredientSheet({
           <div><dt>도입 시기</dt><dd>만 {ingredient.minimumAgeMonths ?? 6}개월부터 · {stageLabels[ingredient.minimumStage]}</dd></div>
           <div><dt>조리·안전</dt><dd>{preparation}</dd></div>
           {ingredient.frequencyCap7Days && <div><dt>빈도 제한</dt><dd>최근 7일 최대 {ingredient.frequencyCap7Days}회</dd></div>}
+          <div><dt>현재 상태</dt><dd>{state ? ingredientStatusLabels[state.status] : "미도입"}{state?.status === "testing" ? ` · ${state.testDay ?? 1}/3일` : ""}</dd></div>
           <div><dt>책 근거</dt><dd>{ingredient.sourcePages?.join(" · ") ?? "가족이 직접 추가한 재료"}</dd></div>
           <div><dt>기록 방법</dt><dd>섭취량, 단순 거부, 질감 어려움, 이상 반응을 각각 나누어 기록해요.</dd></div>
         </dl>
+        <section className="ingredient-state-editor" aria-labelledby="ingredient-state-title">
+          <div>
+            <span className="overline">가족 보정</span>
+            <h3 id="ingredient-state-title">재료 상태 직접 수정</h3>
+          </div>
+          <div className="ingredient-state-options">
+            {(["ready", "testing", "passed", "rejected", "paused", "suspectedReaction", "avoid"] as ChildIngredientState["status"][]).map((value) => (
+              <button className={status === value ? "is-selected" : ""} type="button" key={value} onClick={() => setStatus(value)} aria-pressed={status === value}>
+                {ingredientStatusLabels[value]}
+              </button>
+            ))}
+          </div>
+          {status === "testing" && (
+            <div className="trial-day-picker" aria-label="도입 관찰 일차">
+              {[1, 2, 3].map((day) => (
+                <button className={testDay === day ? "is-selected" : ""} type="button" key={day} onClick={() => setTestDay(day)} aria-pressed={testDay === day}>{day}/3일</button>
+              ))}
+            </div>
+          )}
+          <button
+            className="secondary-action"
+            type="button"
+            disabled={saving}
+            onClick={() => {
+              setSaving(true);
+              void onSaveState(status, status === "testing" ? testDay : null).finally(() => setSaving(false));
+            }}
+          >
+            {saving ? "가족 공간에 저장 중…" : "이 상태로 저장"}
+          </button>
+        </section>
+        {onEditCustom && <button className="custom-edit-action" type="button" onClick={onEditCustom}>직접 추가한 재료 편집·삭제</button>}
         <button className="primary-action" type="button" onClick={onClose}>확인했어요</button>
       </section>
     </div>
@@ -1205,6 +1249,115 @@ function AddIngredientSheet({
             {matchingIngredient ? "이미 등록된 재료예요" : saving ? "가족 공간에 저장 중…" : "재료 추가"}
           </button>
         </form>
+      </section>
+    </div>
+  );
+}
+
+function EditCustomIngredientSheet({
+  ingredient,
+  ingredients,
+  onSave,
+  onArchive,
+  onClose,
+}: {
+  ingredient: IngredientDefinition;
+  ingredients: IngredientDefinition[];
+  onSave: (ingredient: IngredientDefinition) => Promise<void>;
+  onArchive: () => Promise<void>;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState(ingredient.name);
+  const [category, setCategory] = useState<IngredientCategory>(ingredient.category);
+  const [assetId, setAssetId] = useState(ingredient.assetId ?? "broccoli");
+  const [saving, setSaving] = useState(false);
+  const [confirmingArchive, setConfirmingArchive] = useState(false);
+  const duplicate = ingredients.find(
+    (item) => item.id !== ingredient.id && item.name.replace(/\s/g, "") === name.trim().replace(/\s/g, ""),
+  );
+  const assetChoices = ingredientDefinitions.filter(
+    (item) => item.category === category && ingredientAssetPaths[item.id],
+  );
+
+  const chooseCategory = (nextCategory: IngredientCategory) => {
+    setCategory(nextCategory);
+    const firstAsset = ingredientDefinitions.find(
+      (item) => item.category === nextCategory && ingredientAssetPaths[item.id],
+    );
+    if (firstAsset) setAssetId(firstAsset.id);
+  };
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    dismissMobileKeyboard();
+    if (!name.trim() || duplicate || !assetId) return;
+    setSaving(true);
+    try {
+      await onSave({
+        ...ingredient,
+        name: name.trim(),
+        category,
+        assetId,
+        introductionGroup: introductionGroupByCategory[category],
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="sheet-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="record-sheet compact-sheet" role="dialog" aria-modal="true" aria-labelledby="edit-custom-title" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="sheet-handle" aria-hidden="true" />
+        <div className="sheet-heading">
+          <div><span className="overline">가족 재료</span><h2 id="edit-custom-title">직접 추가한 재료 편집</h2></div>
+          <button className="close-button" type="button" onClick={onClose} aria-label="닫기"><X size={19} /></button>
+        </div>
+        <form className="ingredient-form" onSubmit={(event) => void submit(event)}>
+          <label className="form-field">
+            <span>재료 이름</span>
+            <input value={name} onChange={(event) => setName(event.target.value)} autoFocus />
+          </label>
+          <fieldset className="form-field">
+            <legend>책 식품군</legend>
+            <div className="category-picker">
+              {categoryOrder.map((value) => (
+                <button className={category === value ? "is-selected" : ""} type="button" key={value} onClick={() => chooseCategory(value)} aria-pressed={category === value}>
+                  {categoryLabels[value]}
+                </button>
+              ))}
+            </div>
+          </fieldset>
+          <fieldset className="form-field">
+            <legend>재료 이미지</legend>
+            <div className="asset-picker">
+              {assetChoices.map((item) => (
+                <button className={assetId === item.id ? "is-selected" : ""} type="button" key={item.id} onClick={() => setAssetId(item.id)} aria-label={`${item.name} 이미지 선택`} aria-pressed={assetId === item.id}>
+                  <IngredientVisual ingredient={item} />
+                  <span>{item.name}</span>
+                  {assetId === item.id && <Check size={14} aria-hidden="true" />}
+                </button>
+              ))}
+            </div>
+          </fieldset>
+          <p>{duplicate ? `${duplicate.name}은(는) 가족 재료 목록에 이미 있어요.` : "수정 내용은 연결된 모든 기기에 반영됩니다."}</p>
+          <button className="primary-action" type="submit" disabled={!name.trim() || Boolean(duplicate) || saving}>
+            {saving ? "수정 내용 저장 중…" : "수정 내용 저장"}
+          </button>
+        </form>
+        <div className="archive-zone">
+          {!confirmingArchive ? (
+            <button type="button" onClick={() => setConfirmingArchive(true)}>가족 목록에서 삭제</button>
+          ) : (
+            <div>
+              <p><strong>{ingredient.name}</strong>을(를) 가족 목록에서 삭제할까요? 기존 식사 기록은 유지됩니다.</p>
+              <span>
+                <button type="button" onClick={() => setConfirmingArchive(false)}>취소</button>
+                <button className="confirm-archive" type="button" disabled={saving} onClick={() => { setSaving(true); void onArchive().finally(() => setSaving(false)); }}>삭제</button>
+              </span>
+            </div>
+          )}
+        </div>
       </section>
     </div>
   );
@@ -1607,6 +1760,7 @@ export function MealApp() {
     return { year: today.getFullYear(), month: today.getMonth() };
   });
   const [selectedIngredient, setSelectedIngredient] = useState<IngredientDefinition | null>(null);
+  const [editingCustomIngredient, setEditingCustomIngredient] = useState<IngredientDefinition | null>(null);
   const [ingredientStates, setIngredientStates] = useState<ChildIngredientState[]>([]);
   const [mealHistory, setMealHistory] = useState<MealHistoryEntry[]>([]);
   const [customIngredients, setCustomIngredients] = useState<IngredientDefinition[]>([]);
@@ -1623,6 +1777,9 @@ export function MealApp() {
   const allIngredients = useMemo(() => [...ingredientDefinitions, ...customIngredients], [customIngredients]);
   const currentChild = familyWorkspace?.children[0] ?? null;
   const displayProfile = currentChild ?? demoProfile;
+  const selectedIngredientState = selectedIngredient
+    ? ingredientStates.find((state) => state.ingredientId === selectedIngredient.id)
+    : undefined;
   const currentPlan = useMemo(
     () => createBookBasedDayPlan(
       recommendationProfile(displayProfile),
@@ -1855,6 +2012,73 @@ export function MealApp() {
     }
   };
 
+  const saveManualIngredientState = async (
+    ingredient: IngredientDefinition,
+    status: ChildIngredientState["status"],
+    testDay: number | null,
+  ) => {
+    if (!currentChild) {
+      setSelectedIngredient(null);
+      setActiveTab("profile");
+      showToast("먼저 가족 공간을 연결해주세요.");
+      return;
+    }
+    const existing = ingredientStates.find((state) => state.ingredientId === ingredient.id);
+    const exposureCount = status === "passed"
+      ? Math.max(3, existing?.exposureCount ?? 0)
+      : status === "testing"
+        ? Math.max((testDay ?? 1) - 1, existing?.exposureCount ?? 0)
+        : status === "ready"
+          ? 0
+          : existing?.exposureCount ?? 0;
+    const nextState: ChildIngredientState = {
+      ingredientId: ingredient.id,
+      status,
+      testDay: status === "testing" ? testDay ?? 1 : null,
+      exposureCount,
+      firstOfferedAt: existing?.firstOfferedAt ?? null,
+      lastOfferedAt: existing?.lastOfferedAt ?? null,
+      acceptedTextureMm: existing?.acceptedTextureMm ?? [],
+      lastReaction: status === "suspectedReaction"
+        ? existing?.lastReaction ?? "가족이 직접 반응 확인 필요로 설정"
+        : existing?.lastReaction ?? null,
+    };
+    try {
+      await saveChildIngredientState(currentChild.id, nextState);
+      await refreshFamilyData();
+      showToast(`${ingredient.name} 상태를 ${ingredientStatusLabels[status]}으로 저장했어요.`);
+    } catch {
+      showToast("재료 상태를 저장하지 못했어요. 잠시 후 다시 시도해주세요.");
+    }
+  };
+
+  const saveEditedCustomIngredient = async (ingredient: IngredientDefinition) => {
+    if (!familyWorkspace) return;
+    try {
+      await updateCustomIngredient(familyWorkspace.householdId, ingredient);
+      await refreshFamilyData();
+      setEditingCustomIngredient(null);
+      setSelectedIngredient(null);
+      showToast(`${ingredient.name} 수정 내용을 가족 목록에 저장했어요.`);
+    } catch {
+      showToast("재료 수정 내용을 저장하지 못했어요.");
+    }
+  };
+
+  const archiveEditedCustomIngredient = async () => {
+    if (!familyWorkspace || !editingCustomIngredient) return;
+    const archivedName = editingCustomIngredient.name;
+    try {
+      await archiveCustomIngredient(familyWorkspace.householdId, editingCustomIngredient.id);
+      await refreshFamilyData();
+      setEditingCustomIngredient(null);
+      setSelectedIngredient(null);
+      showToast(`${archivedName}을(를) 가족 목록에서 삭제했어요.`);
+    } catch {
+      showToast("재료를 삭제하지 못했어요. 잠시 후 다시 시도해주세요.");
+    }
+  };
+
   const moveCalendarMonth = (direction: -1 | 1) => {
     const next = new Date(calendarCursor.year, calendarCursor.month + direction, 1);
     setSelectedDate(toDateId(next));
@@ -2025,7 +2249,27 @@ export function MealApp() {
         <RecordSheet mealIndex={recordTargetMealIndex} plannedTime={recordPlannedTime} targetDate={recordTargetDate} initialRecord={editingRecord} onClose={() => { setRecordOpen(false); setRecordIngredientIds(null); }} onSave={saveRecord} />
       )}
 
-      {selectedIngredient && <IngredientSheet ingredient={selectedIngredient} onClose={() => setSelectedIngredient(null)} />}
+      {selectedIngredient && (
+        <IngredientSheet
+          ingredient={selectedIngredient}
+          state={selectedIngredientState}
+          onSaveState={(status, testDay) => saveManualIngredientState(selectedIngredient, status, testDay)}
+          onEditCustom={selectedIngredient.id.startsWith("custom-")
+            ? () => { setEditingCustomIngredient(selectedIngredient); setSelectedIngredient(null); }
+            : undefined}
+          onClose={() => setSelectedIngredient(null)}
+        />
+      )}
+
+      {editingCustomIngredient && (
+        <EditCustomIngredientSheet
+          ingredient={editingCustomIngredient}
+          ingredients={allIngredients}
+          onSave={saveEditedCustomIngredient}
+          onArchive={archiveEditedCustomIngredient}
+          onClose={() => setEditingCustomIngredient(null)}
+        />
+      )}
 
       {addIngredientOpen && <AddIngredientSheet ingredients={allIngredients} onAdd={addIngredient} onClose={() => setAddIngredientOpen(false)} />}
 

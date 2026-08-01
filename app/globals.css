@@ -841,6 +841,22 @@ button {
 .detail-list > div:last-child { border-bottom: 0; }
 .detail-list dt { color: var(--ink-soft); font-size: 11px; }
 .detail-list dd { margin: 0; font-size: 13px; line-height: 1.6; }
+.ingredient-state-editor { display: grid; gap: 13px; margin: -4px 0 18px; padding: 17px; border: 1px solid var(--line); border-radius: 18px; background: rgba(247, 243, 233, 0.62); }
+.ingredient-state-editor h3 { margin: 5px 0 0; font-size: 16px; }
+.ingredient-state-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
+.ingredient-state-options button,
+.trial-day-picker button { min-height: 39px; min-width: 0; padding: 7px 6px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); color: var(--ink-soft); font-size: 9px; cursor: pointer; }
+.ingredient-state-options button.is-selected,
+.trial-day-picker button.is-selected { border-color: rgba(80, 102, 78, 0.5); background: var(--sage-soft); color: var(--sage-deep); font-weight: 700; }
+.trial-day-picker { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; }
+.custom-edit-action { width: 100%; min-height: 46px; margin: 0 0 10px; border: 1px solid rgba(80, 102, 78, 0.42); border-radius: 15px; background: transparent; color: var(--sage-deep); font-size: 11px; font-weight: 700; cursor: pointer; }
+.archive-zone { margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--line); }
+.archive-zone > button { width: 100%; min-height: 42px; border: 0; background: transparent; color: #a05d4d; font-size: 11px; font-weight: 700; cursor: pointer; }
+.archive-zone > div { display: grid; gap: 13px; padding: 14px; border-radius: 15px; background: var(--apricot-soft); }
+.archive-zone p { margin: 0; color: #7c533b; font-size: 11px; line-height: 1.65; }
+.archive-zone span { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.archive-zone span button { min-height: 40px; border: 1px solid rgba(124, 83, 59, 0.24); border-radius: 12px; background: var(--paper); color: #7c533b; font-size: 10px; font-weight: 700; cursor: pointer; }
+.archive-zone span button.confirm-archive { border-color: #a05d4d; background: #a05d4d; color: white; }
 .setting-options { display: grid; gap: 8px; margin-top: 22px; }
 .setting-options button { display: flex; min-height: 56px; align-items: center; justify-content: space-between; gap: 12px; padding: 0 16px; border: 1px solid var(--line); border-radius: 17px; background: var(--paper); color: var(--ink); text-align: left; cursor: pointer; }
 .setting-options button.is-selected { border-color: rgba(80, 102, 78, 0.45); background: var(--sage-soft); color: var(--sage-deep); font-weight: 700; }
