@@ -419,18 +419,18 @@ function preparationForMeal(
   const vegetables = ingredients.filter((item) => item.category === "vegetable");
   const constraints = ingredients.flatMap((item) => item.preparationConstraints ?? []).slice(0, 2);
   const baseStep = stage === "initial"
-    ? `${grain?.name ?? "곡류"}는 ${guide.grainDescription} 기준으로 충분히 익혀 ${textureMm}mm 안팎 입자를 남겨요.`
+    ? `${grain?.name ?? "곡류"}: ${guide.grainDescription} 기준으로 충분히 익혀 ${textureMm}mm 안팎 입자를 남겨요.`
     : stage === "middle"
-      ? `${grain?.name ?? "곡류"}는 부드러운 죽으로, 다른 재료는 ${textureMm}mm 안팎으로 으깨거나 잘게 썰어요.`
+      ? `${grain?.name ?? "곡류"}: 부드러운 죽으로 준비하고, 다른 재료는 ${textureMm}mm 안팎으로 으깨거나 잘게 썰어요.`
       : stage === "late"
-        ? `${grain?.name ?? "밥"}은 무른밥·진밥으로, 반찬은 ${textureMm}mm 안팎의 잇몸으로 으깨지는 크기로 준비해요.`
-        : `${grain?.name ?? "밥"}은 가족 밥보다 부드럽게, 반찬은 ${textureMm}mm 안팎으로 무염 조리해요.`;
+        ? `${grain?.name ?? "밥"}: 무른밥·진밥으로 준비하고, 반찬은 ${textureMm}mm 안팎의 잇몸으로 으깨지는 크기로 만들어요.`
+        : `${grain?.name ?? "밥"}: 가족 밥보다 부드럽게 준비하고, 반찬은 ${textureMm}mm 안팎으로 무염 조리해요.`;
   const cookStep = animalFoods.length
-    ? `${animalFoods.map((item) => item.name).join("·")}은 속까지 완전히 익히고${vegetables.length ? `, ${vegetables.map((item) => item.name).join("·")}은 손가락으로 눌러 으깨질 만큼 익혀요.` : "."}`
-    : `${vegetables.map((item) => item.name).join("·") || "재료"}은 손가락으로 눌러 으깨질 만큼 부드럽게 익혀요.`;
+    ? `${animalFoods.map((item) => item.name).join("·")}: 속까지 완전히 익혀요.${vegetables.length ? ` ${vegetables.map((item) => item.name).join("·")}: 손가락으로 눌러 으깨질 만큼 익혀요.` : ""}`
+    : `${vegetables.map((item) => item.name).join("·") || "재료"}: 손가락으로 눌러 으깨질 만큼 부드럽게 익혀요.`;
   const serveStep = newIngredientId
-    ? `새 재료 ${ingredients.find((item) => item.id === newIngredientId)?.name ?? "한 가지"}는 먼저 소량을 ${servingMode === "섞은 죽" ? "익숙한 죽 한쪽에 얹어" : "분리해"} 반응을 구분하고, 나머지는 ${servingMode}로 제공해요.`
-    : `${servingMode} 형태로 놓고 무엇을 얼마나 먹을지는 아이가 결정하게 해요.`;
+    ? `새 재료 ${ingredients.find((item) => item.id === newIngredientId)?.name ?? "한 가지"}: 처음에는 소량을 ${servingMode === "섞은 죽" ? "익숙한 죽 한쪽에 얹어" : "분리해"} 반응을 구분하고, 나머지는 ‘${servingMode}’ 형태로 제공해요.`
+    : `‘${servingMode}’ 형태로 놓고 무엇을 얼마나 먹을지는 아이가 결정하게 해요.`;
   return [baseStep, cookStep, serveStep, ...constraints.map((constraint) => `재료별 안전: ${constraint}`)];
 }
 

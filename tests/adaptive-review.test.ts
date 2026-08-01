@@ -61,4 +61,5 @@ test("adds preparation, serving and storage instructions to every planned meal",
     assert.ok(meal.servingMode.length > 0);
     assert.match(meal.storageGuide, /보관|냉장|재냉동/);
   }
+  assert.doesNotMatch(plan.meals[0].preparationSteps.join(" "), /쌀는|죽로|재료은/);
 });
