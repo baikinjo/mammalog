@@ -792,17 +792,25 @@ button {
 .sheet-backdrop {
   position: fixed;
   z-index: 50;
-  inset: 0;
+  inset: auto 0;
+  top: var(--sheet-visual-top, 0px);
+  height: var(--sheet-visual-height, 100dvh);
   display: grid;
   align-items: end;
   padding: 24px max(16px, calc((100vw - 720px) / 2)) 0;
   background: rgba(48, 47, 42, 0.38);
   backdrop-filter: blur(5px);
+  overflow: hidden;
+  overscroll-behavior: contain;
 }
 
 .record-sheet {
-  max-height: 92vh;
+  width: 100%;
+  max-height: calc(var(--sheet-visual-height, 100dvh) - 12px);
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-padding-block: 24px max(30px, env(safe-area-inset-bottom));
+  -webkit-overflow-scrolling: touch;
   padding: 12px 24px max(26px, env(safe-area-inset-bottom));
   border-radius: 30px 30px 0 0;
   background: var(--paper);
@@ -944,7 +952,7 @@ textarea:focus-visible {
   .calendar-footer { display: grid; justify-items: start; gap: 8px; }
   .calendar-hint { text-align: left; }
   .amount-options { grid-template-columns: repeat(2, 1fr); }
-  .sheet-backdrop { padding-inline: 0; }
+  .sheet-backdrop { padding: 8px 0 0; }
   .record-sheet { padding-inline: 20px; }
 }
 

@@ -195,6 +195,20 @@ function dismissMobileKeyboard() {
   if (activeElement instanceof HTMLElement) activeElement.blur();
 }
 
+function syncSheetVisualViewport() {
+  const viewport = window.visualViewport;
+  const root = document.documentElement;
+
+  if (!viewport) {
+    root.style.removeProperty("--sheet-visual-height");
+    root.style.removeProperty("--sheet-visual-top");
+    return;
+  }
+
+  root.style.setProperty("--sheet-visual-height", `${Math.round(viewport.height)}px`);
+  root.style.setProperty("--sheet-visual-top", `${Math.round(viewport.offsetTop)}px`);
+}
+
 function createMonthDays(cursor: CalendarCursor) {
   const total = new Date(cursor.year, cursor.month + 1, 0).getDate();
   return Array.from({ length: total }, (_, index): CalendarDay => {
@@ -1189,6 +1203,34 @@ export function MealApp() {
   const showToast = useCallback((message: string) => {
     setToast(message);
     window.setTimeout(() => setToast(null), 2600);
+  }, []);
+
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    syncSheetVisualViewport();
+    if (!viewport) return;
+
+    let focusFrame = 0;
+    const keepFocusedControlVisible = () => {
+      syncSheetVisualViewport();
+      window.cancelAnimationFrame(focusFrame);
+      focusFrame = window.requestAnimationFrame(() => {
+        const focusedControl = document.activeElement;
+        if (focusedControl instanceof HTMLElement && focusedControl.closest(".record-sheet")) {
+          focusedControl.scrollIntoView({ block: "center", inline: "nearest" });
+        }
+      });
+    };
+
+    viewport.addEventListener("resize", keepFocusedControlVisible);
+    viewport.addEventListener("scroll", syncSheetVisualViewport);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      viewport.removeEventListener("resize", keepFocusedControlVisible);
+      viewport.removeEventListener("scroll", syncSheetVisualViewport);
+      document.documentElement.style.removeProperty("--sheet-visual-height");
+      document.documentElement.style.removeProperty("--sheet-visual-top");
+    };
   }, []);
 
   const refreshFamilyData = useCallback(async () => {
