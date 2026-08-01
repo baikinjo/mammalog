@@ -22,7 +22,7 @@ import {
   demoProfile,
   ingredientDefinitions,
 } from "../lib/demo-data";
-import { createInitialMealSuggestion } from "../lib/recommendation-engine";
+import { createBookBasedDayPlan, createInitialMealSuggestion } from "../lib/recommendation-engine";
 import type { IngredientCategory, IngredientDefinition, IntroductionGroup } from "../lib/domain";
 
 type Tab = "today" | "ingredients" | "records" | "profile";
@@ -99,6 +99,22 @@ const introductionGroupByCategory: Record<IngredientCategory, IntroductionGroup>
   nutsOil: "other",
 };
 
+const introductionGroupLabels: Record<IntroductionGroup, string> = {
+  grain: "곡류",
+  meat: "고기",
+  leafy: "이파리 채소",
+  yellow: "노란 채소",
+  fruit: "과일",
+  other: "다양화 재료",
+};
+
+const stageLabels = {
+  initial: "초기",
+  middle: "중기",
+  late: "후기",
+  completion: "완료기",
+};
+
 function toDateId(date: Date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -143,7 +159,7 @@ function IngredientVisual({ ingredient, className = "" }: { ingredient: Ingredie
 
   return (
     <span className={`ingredient-visual ${src ? "" : "is-custom"} ${className}`.trim()} aria-hidden="true">
-      {src ? <img src={src} alt="" width="96" height="96" /> : <Sprout size={22} />}
+      {src ? <img src={src} alt="" width="96" height="96" /> : <span className="ingredient-letter">{ingredient.name.slice(0, 1)}</span>}
     </span>
   );
 }
@@ -227,6 +243,15 @@ function TodayMeal({
       ),
     [],
   );
+  const bookPlan = useMemo(
+    () => createBookBasedDayPlan(
+      { ...demoProfile, stage: "initial", ageMonths: 6, correctedAgeMonths: 6, mealsPerDay: 1 },
+      ingredientDefinitions,
+      demoIngredientStates,
+      demoHistory,
+    ),
+    [],
+  );
   const [simpleRice, setSimpleRice] = useState(false);
 
   return (
@@ -296,6 +321,32 @@ function TodayMeal({
         </button>
       </section>
 
+      <section className="section-card rule-check-card">
+        <div className="section-heading">
+          <div>
+            <span className="overline">책 기반 확인</span>
+            <h2>오늘 적용된 규칙</h2>
+          </div>
+          <span className="count-badge">{bookPlan.stageLabel}</span>
+        </div>
+        <div className="rule-check-grid">
+          {bookPlan.checks.map((check) => (
+            <div className={`rule-check-item ${check.met ? "is-met" : ""}`} key={check.id}>
+              <span aria-hidden="true">{check.met ? "✓" : "·"}</span>
+              <div><strong>{check.label}</strong><small>{check.detail}</small></div>
+            </div>
+          ))}
+        </div>
+        <div className="development-note">
+          <Sprout size={17} aria-hidden="true" />
+          <p><strong>오늘의 먹기 연습</strong><br />{bookPlan.developmentTask}</p>
+        </div>
+        <details className="reason-box safety-reasons">
+          <summary>안전 기준 보기</summary>
+          <ul>{bookPlan.safetyNotes.map((note) => <li key={note}>{note}</li>)}</ul>
+        </details>
+      </section>
+
       <section className="sync-row">
         <div className="avatar-pair" aria-hidden="true">
           <span>아</span><span>엄</span>
@@ -315,8 +366,12 @@ function IngredientsView({
   onSelect: (ingredient: IngredientDefinition) => void;
   onAdd: () => void;
 }) {
+  const [selectedCategory, setSelectedCategory] = useState<IngredientCategory | "all">("all");
   const rice = ingredients.find((ingredient) => ingredient.id === "rice") ?? ingredients[0];
   const beef = ingredients.find((ingredient) => ingredient.id === "beef") ?? ingredients[2];
+  const visibleIngredients = selectedCategory === "all"
+    ? ingredients
+    : ingredients.filter((ingredient) => ingredient.category === selectedCategory);
 
   return (
     <>
@@ -344,22 +399,31 @@ function IngredientsView({
       <section className="section-card">
         <div className="section-heading">
           <div>
-            <span className="overline">첫 순서</span>
-            <h2>도입 대기 재료</h2>
+            <span className="overline">책 전체 범위</span>
+            <h2>재료 원장</h2>
           </div>
-          <span className="count-badge">{ingredients.length}개</span>
+          <span className="count-badge">{visibleIngredients.length}개</span>
+        </div>
+        <p className="catalog-note">도입 우선순위와 월령·빈도·조리 안전 규칙을 함께 저장한 목록이에요.</p>
+        <div className="ingredient-filters" aria-label="재료 식품군 필터">
+          <button className={selectedCategory === "all" ? "is-selected" : ""} type="button" onClick={() => setSelectedCategory("all")}>전체</button>
+          {categoryOrder.map((category) => (
+            <button className={selectedCategory === category ? "is-selected" : ""} type="button" key={category} onClick={() => setSelectedCategory(category)}>
+              {categoryLabels[category]}
+            </button>
+          ))}
         </div>
         <div className="ingredient-list">
-          {ingredients.map((ingredient, index) => {
+          {visibleIngredients.map((ingredient) => {
             const isCustom = ingredient.id.startsWith("custom-");
             return (
               <button className="ingredient-row" type="button" key={ingredient.id} onClick={() => onSelect(ingredient)}>
                 <IngredientVisual ingredient={ingredient} />
                 <div>
                   <strong>{ingredient.name}</strong>
-                  <span>{isCustom ? `직접 추가 · ${categoryLabels[ingredient.category]}` : index < 2 ? "첫 곡류" : index === 2 ? "매일 고기 시작" : "순서에 맞춰 열림"}</span>
+                  <span>{isCustom ? `직접 추가 · ${categoryLabels[ingredient.category]}` : `${introductionGroupLabels[ingredient.introductionGroup]} · 만 ${ingredient.minimumAgeMonths ?? 6}개월부터`}</span>
                 </div>
-                <span className="ingredient-order"><i>{String(index + 1).padStart(2, "0")}</i><ChevronRight size={16} aria-hidden="true" /></span>
+                <span className="ingredient-order"><i>{String(ingredient.introductionPriority).padStart(2, "0")}</i><ChevronRight size={16} aria-hidden="true" /></span>
               </button>
             );
           })}
@@ -538,11 +602,10 @@ function IngredientSheet({
 }) {
   const guidance = ingredient.id.startsWith("custom-")
     ? "직접 추가한 재료예요. 가족의 계획에 맞춰 도입 시기를 정할 수 있어요."
-    : ingredient.id === "rice" || ingredient.id === "oatmeal"
-    ? "첫 곡류로 소량부터 시작해요."
-    : ingredient.id === "beef"
-      ? "곡류에 익숙해진 뒤 매일 식단에 더해요."
-      : "앞선 재료에 적응한 뒤 한 가지씩 열어요.";
+    : ingredient.bookGuidance ?? "앞선 재료에 적응한 뒤 한 가지씩 열어요.";
+  const preparation = ingredient.preparationConstraints?.join(" · ")
+    ?? ingredient.chokingFormBlacklist?.map((item) => `${item} 제외`).join(" · ")
+    ?? "단계에 맞게 충분히 부드럽게 조리";
 
   return (
     <div className="sheet-backdrop" role="presentation" onMouseDown={onClose}>
@@ -556,9 +619,12 @@ function IngredientSheet({
           <button className="close-button" type="button" onClick={onClose} aria-label="닫기"><X size={19} /></button>
         </div>
         <dl className="detail-list">
-          <div><dt>권장 흐름</dt><dd>{guidance}</dd></div>
-          <div><dt>현재 상태</dt><dd>{ingredient.id === "rice" ? "테스트 예정" : "도입 대기"}</dd></div>
-          <div><dt>기록 방법</dt><dd>섭취량과 거부·반응을 나누어 기록해요.</dd></div>
+          <div><dt>책의 흐름</dt><dd>{guidance}</dd></div>
+          <div><dt>도입 시기</dt><dd>만 {ingredient.minimumAgeMonths ?? 6}개월부터 · {stageLabels[ingredient.minimumStage]}</dd></div>
+          <div><dt>조리·안전</dt><dd>{preparation}</dd></div>
+          {ingredient.frequencyCap7Days && <div><dt>빈도 제한</dt><dd>최근 7일 최대 {ingredient.frequencyCap7Days}회</dd></div>}
+          <div><dt>책 근거</dt><dd>{ingredient.sourcePages?.join(" · ") ?? "가족이 직접 추가한 재료"}</dd></div>
+          <div><dt>기록 방법</dt><dd>섭취량, 단순 거부, 질감 어려움, 이상 반응을 각각 나누어 기록해요.</dd></div>
         </dl>
         <button className="primary-action" type="button" onClick={onClose}>확인했어요</button>
       </section>
