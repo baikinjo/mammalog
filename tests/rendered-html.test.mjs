@@ -31,6 +31,7 @@ test("renders the Korean preparation dashboard", async () => {
   assert.match(html, /맘마로그/);
   assert.match(html, /이유식 준비 중|첫 한끼를/);
   assert.match(html, /우리 아이의 첫 식사/);
+  assert.doesNotMatch(html, /테스트와 개인정보|>아<|>엄<|설정 전/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton/i);
 });
 

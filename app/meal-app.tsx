@@ -838,10 +838,8 @@ function TodayMeal({
       </section>
 
       <section className="sync-row">
-        <div className="avatar-pair" aria-hidden="true">
-          <span>아</span><span>엄</span>
-        </div>
-        <p><strong>가족 동기화를 지원해요</strong><br />우리 아이 탭에서 각자 이메일로 연결하면 같은 기록을 보게 됩니다.</p>
+        <span className="sync-row-icon" aria-hidden="true"><Link2 size={19} /></span>
+        <p><strong>가족과 같은 기록을 봐요</strong><br />우리 아이 탭에서 보호자 계정을 연결하면 어느 기기에서든 함께 기록할 수 있어요.</p>
       </section>
     </>
   );
@@ -1169,7 +1167,7 @@ function ProfileView({
   return (
     <>
       <section className="profile-hero">
-        <div className="baby-avatar" aria-hidden="true">아</div>
+        <div className="baby-avatar" aria-hidden="true"><Baby size={48} strokeWidth={1.45} /></div>
         <div>
           <span className="overline">우리 가족</span>
           <h1>{profile.nickname}</h1>
@@ -1207,17 +1205,17 @@ function ProfileView({
 
       <section className="section-card data-control-card">
         <div className="section-heading">
-          <div><span className="overline">테스트와 개인정보</span><h2>데이터 관리</h2></div>
+          <div><span className="overline">계정과 데이터</span><h2>데이터 관리</h2></div>
         </div>
         <div className="data-control-list">
           <button type="button" onClick={onResetProgress}>
             <RotateCcw size={18} aria-hidden="true" />
-            <span><strong>진행 기록 초기화</strong><small>식사·재료 도입·추천 진행도를 지우고 시작 전으로 돌아가요.</small></span>
+            <span><strong>이유식 진행 초기화</strong><small>아이 정보와 가족 연결은 유지하고 식사·재료 도입·추천 기록만 지워요.</small></span>
             <ChevronRight size={17} aria-hidden="true" />
           </button>
           <button className="is-destructive" type="button" onClick={onDeleteAccount}>
             <Trash2 size={18} aria-hidden="true" />
-            <span><strong>내 정보와 계정 삭제</strong><small>내 로그인과 내가 남긴 기록을 영구 삭제해요.</small></span>
+            <span><strong>계정과 내 데이터 삭제</strong><small>현재 계정·가족 연결·내가 남긴 기록을 영구 삭제해요.</small></span>
             <ChevronRight size={17} aria-hidden="true" />
           </button>
         </div>
@@ -1501,10 +1499,10 @@ function FamilySyncSection({ onWorkspaceChange }: { onWorkspaceChange: () => voi
           <span className="overline">함께 보는 사람</span>
           <h2>가족 동기화</h2>
         </div>
-        <span className={`sync-status ${workspace ? "is-connected" : ""}`}>{workspace ? "연결됨" : configured ? "연결 대기" : "설정 전"}</span>
+        <span className={`sync-status ${workspace ? "is-connected" : ""}`}>{workspace ? "연결됨" : userEmail ? "가족 연결 필요" : "로그인 필요"}</span>
       </div>
 
-      {!configured && <p className="sync-copy">공유 저장소 연결 정보가 설정되면 이메일 로그인을 사용할 수 있어요.</p>}
+      {!configured && <p className="sync-copy">가족 공유 연결을 준비하는 중이에요. 잠시 후 다시 열어주세요.</p>}
 
       {configured && !userEmail && (
         <div className="device-connect-panel">
@@ -2935,9 +2933,9 @@ export function MealApp() {
           <span><strong>맘마로그</strong><small>우리 아이의 첫 식사</small></span>
         </a>
         <button className="family-button" type="button" onClick={() => switchTab("profile")}>
-          <span className="avatar-pair" aria-hidden="true"><i>아</i><i>엄</i></span>
+          <Baby className="family-button-icon" size={18} strokeWidth={1.7} aria-hidden="true" />
           <span>우리 가족</span>
-          <ChevronRight size={17} aria-hidden="true" />
+          <ChevronRight className="family-button-chevron" size={17} aria-hidden="true" />
         </button>
       </header>
 

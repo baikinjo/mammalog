@@ -146,32 +146,7 @@ button {
   flex: 0 0 auto;
 }
 
-.avatar-pair {
-  display: inline-flex;
-  align-items: center;
-}
-
-.avatar-pair i,
-.avatar-pair > span {
-  display: grid;
-  width: 28px;
-  height: 28px;
-  place-items: center;
-  border: 2px solid var(--paper);
-  border-radius: 50%;
-  background: var(--sage-soft);
-  color: var(--sage-deep);
-  font-size: 10px;
-  font-style: normal;
-  font-weight: 700;
-}
-
-.avatar-pair i + i,
-.avatar-pair > span + span {
-  margin-left: -7px;
-  background: var(--apricot-soft);
-  color: #925f40;
-}
+.family-button-icon { color: var(--sage-deep); }
 
 .app-main {
   display: grid;
@@ -647,7 +622,16 @@ button {
   border: 1px dashed rgba(110, 132, 107, 0.4);
 }
 
-.sync-row .avatar-pair { margin-top: 2px; }
+.sync-row-icon {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 14px;
+  background: var(--sage-soft);
+  color: var(--sage-deep);
+}
 
 .ingredient-status-grid {
   display: grid;
@@ -781,7 +765,8 @@ button {
 
 .profile-hero { display: flex; align-items: center; gap: 20px; padding: 26px; }
 .profile-hero h1 { margin: 5px 0; font-size: 30px; }
-.baby-avatar { display: grid; width: 76px; height: 76px; flex: 0 0 auto; place-items: center; border-radius: 28px; background: linear-gradient(145deg, var(--sage-soft), var(--paper)); color: var(--sage-deep); font-family: Georgia, serif; font-size: 28px; box-shadow: inset 0 0 0 1px rgba(110, 132, 107, 0.18); }
+.baby-avatar { display: grid; width: 76px; height: 76px; flex: 0 0 auto; place-items: center; border-radius: 28px; background: linear-gradient(145deg, var(--sage-soft), var(--paper)); color: var(--sage-deep); box-shadow: inset 0 0 0 1px rgba(110, 132, 107, 0.18); }
+.baby-avatar svg { display: block; }
 .profile-edit-action { min-height: 36px; margin-left: auto; padding: 0 12px; border: 1px solid rgba(80, 102, 78, 0.32); border-radius: 999px; background: transparent; color: var(--sage-deep); font-size: 10px; font-weight: 700; cursor: pointer; }
 
 .profile-settings { padding-block: 8px; }
@@ -1116,8 +1101,9 @@ textarea:focus-visible {
 @media (max-width: 430px) {
   .site-shell { padding-inline: 16px; }
   .app-header { padding-bottom: 17px; }
-  .family-button > span:nth-child(2),
-  .family-button > svg { display: none; }
+  .family-button > span,
+  .family-button-chevron { display: none; }
+  .family-button { width: 44px; justify-content: center; padding: 0; }
   .hero-card { min-height: 250px; padding: 25px 22px; }
   .hero-orbit { right: -58px; opacity: 0.78; }
   .section-card { padding: 21px; }
