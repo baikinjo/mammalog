@@ -76,6 +76,7 @@ import {
   type FamilyWorkspace,
 } from "../lib/family-repository";
 import { getSupabaseClient, isSupabaseConfigured } from "../lib/supabase-client";
+import { createWeeklyBalance } from "../lib/weekly-balance";
 
 type Tab = "today" | "ingredients" | "records" | "profile";
 type Amount = "taste" | "quarter" | "half" | "most";
@@ -903,6 +904,10 @@ function IngredientsView({
 function RecordsView({
   records,
   workspace,
+  profile,
+  ingredients,
+  ingredientStates,
+  mealHistory,
   mealCount,
   selectedDate,
   todayId,
@@ -915,6 +920,10 @@ function RecordsView({
 }: {
   records: FamilyMealRecord[];
   workspace: FamilyWorkspace | null;
+  profile: BabyProfile;
+  ingredients: IngredientDefinition[];
+  ingredientStates: ChildIngredientState[];
+  mealHistory: MealHistoryEntry[];
   mealCount: number;
   selectedDate: string;
   todayId: string;
@@ -940,6 +949,10 @@ function RecordsView({
     .filter((mealIndex) => selectedMealIndexes.has(mealIndex)).length;
   const isFutureDate = selectedDate > todayId;
   const canAddRecord = !isFutureDate && completedMealCount < mealCount;
+  const weeklyBalance = useMemo(
+    () => createWeeklyBalance(profile, ingredients, ingredientStates, mealHistory, parseDateId(todayId)),
+    [ingredientStates, ingredients, mealHistory, profile, todayId],
+  );
 
   return (
     <>
@@ -949,6 +962,29 @@ function RecordsView({
           <h1>작은 변화까지<br />함께 기억해요</h1>
         </div>
         <p>누가 기록해도 다른 기기에서 같은 상태를 보게 됩니다.</p>
+      </section>
+
+      <section className="section-card weekly-balance-card">
+        <div className="section-heading">
+          <div>
+            <span className="overline">최근 7일 · 실제 기록 기준</span>
+            <h2>주간 균형판</h2>
+          </div>
+          <span className="count-badge">{weeklyBalance.recordedDays}일 · {weeklyBalance.recordedMeals}끼</span>
+        </div>
+        <div className="weekly-balance-grid">
+          {weeklyBalance.metrics.map((metric) => (
+            <div className={`weekly-balance-item is-${metric.status}`} key={metric.id}>
+              <div><span>{metric.label}</span><i aria-hidden="true">{metric.status === "met" ? <Check size={11} /> : metric.status === "attention" ? "!" : "·"}</i></div>
+              <strong>{metric.value}</strong>
+              <small>{metric.detail}</small>
+            </div>
+          ))}
+        </div>
+        <div className="weekly-focus-note">
+          <Info size={17} aria-hidden="true" />
+          <p><strong>다음 보완</strong><br />{weeklyBalance.focus}<small>{weeklyBalance.variety}</small></p>
+        </div>
       </section>
 
       <section className="section-card record-week">
@@ -2727,6 +2763,10 @@ export function MealApp() {
           <RecordsView
             records={records}
             workspace={familyWorkspace}
+            profile={displayProfile}
+            ingredients={allIngredients}
+            ingredientStates={ingredientStates}
+            mealHistory={mealHistory}
             mealCount={currentPlan.meals.length}
             selectedDate={selectedDate}
             todayId={todayId}
