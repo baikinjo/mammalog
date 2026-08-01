@@ -69,6 +69,23 @@ test("follows the book's food-group introduction order", () => {
   assert.equal(next?.id, "beef");
 });
 
+test("groups every allergen-marked ingredient into one of seven visible allergen groups", () => {
+  const allergenIngredients = ingredientCatalog.filter((ingredient) => ingredient.allergen);
+  assert.ok(allergenIngredients.length > 7);
+  assert.ok(allergenIngredients.every((ingredient) => ingredient.allergenGroup));
+  assert.deepEqual(
+    [...new Set(allergenIngredients.map((ingredient) => ingredient.allergenGroup))].sort(),
+    ["crustacean", "egg", "milk", "peach", "peanut", "soy", "wheat"],
+  );
+});
+
+test("prioritizes the early wheat allergen after the first five food groups are established", () => {
+  const states = ["rice", "beef", "cabbage", "pumpkin", "apple"].map(passed);
+  const next = chooseNextIngredient(baseProfile, ingredientCatalog, states, [], new Date("2026-07-31T12:00:00.000Z"));
+  assert.equal(next?.id, "wheat");
+  assert.equal(next?.allergenGroup, "wheat");
+});
+
 test("keeps an active trial instead of opening another ingredient", () => {
   const states: ChildIngredientState[] = [
     passed("rice"),

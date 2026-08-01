@@ -654,6 +654,8 @@ button {
 .testing-card { background: linear-gradient(145deg, var(--paper), var(--sage-soft)) !important; }
 .next-card { background: linear-gradient(145deg, var(--paper), var(--apricot-soft)) !important; }
 .status-label { color: var(--ink-soft); font-size: 11px; }
+.status-card-label-row { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 8px; }
+.allergen-badge { display: inline-flex; min-height: 22px; align-items: center; width: fit-content; padding: 0 8px; border-radius: 999px; background: var(--apricot-soft); color: #945c42; font-size: 9px; font-style: normal; font-weight: 800; white-space: nowrap; }
 .ingredient-large { display: flex; align-items: center; gap: 10px; margin: 22px 0 8px; }
 .ingredient-large strong { font-size: 18px; }
 .status-card p { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0; color: var(--ink-soft); font-size: 12px; }
@@ -686,7 +688,9 @@ button {
 .ingredient-letter { display: grid; width: 100%; height: 100%; place-items: center; background: linear-gradient(145deg, var(--sage-soft), var(--paper)); color: var(--sage-deep); font-family: Georgia, "Apple SD Gothic Neo", sans-serif; font-size: 15px; font-weight: 700; }
 .ingredient-row > div { display: grid; gap: 4px; }
 .ingredient-row strong { font-size: 14px; }
-.ingredient-row > div span { color: var(--ink-soft); font-size: 11px; }
+.ingredient-row > div > span { color: var(--ink-soft); font-size: 11px; }
+.ingredient-name-row { display: flex; min-width: 0; align-items: center; flex-wrap: wrap; gap: 6px; color: var(--ink) !important; }
+.ingredient-name-row .allergen-badge { min-height: 19px; padding-inline: 7px; font-size: 8px; }
 .ingredient-order { display: grid; min-width: 48px; grid-template-columns: 26px 18px; align-items: center; justify-items: center; gap: 4px; color: #aaa395; }
 .ingredient-order i { font-family: Georgia, serif; font-size: 18px; font-style: normal; }
 .add-ingredient-button { display: flex; width: 100%; min-height: 48px; align-items: center; justify-content: center; gap: 8px; margin-top: 14px; border: 1px dashed rgba(80, 102, 78, 0.45); border-radius: 16px; background: rgba(223, 232, 217, 0.34); color: var(--sage-deep); font-size: 12px; font-weight: 700; cursor: pointer; }
@@ -696,6 +700,19 @@ button {
 .ingredient-filters button { min-height: 36px; flex: 0 0 auto; padding: 0 13px; border: 1px solid var(--line); border-radius: 999px; background: var(--paper); color: var(--ink-soft); font-size: 10px; cursor: pointer; }
 .ingredient-filters button.is-selected { border-color: rgba(80, 102, 78, 0.42); background: var(--sage-soft); color: var(--sage-deep); font-weight: 700; }
 .availability-filters { margin-top: 13px; margin-bottom: -8px; }
+.trait-filters { margin-top: 8px; margin-bottom: -8px; }
+.ingredient-filters button.allergen-filter { border-color: rgba(201, 117, 71, 0.3); color: #945c42; }
+.ingredient-filters button.allergen-filter.is-selected { border-color: rgba(201, 117, 71, 0.46); background: var(--apricot-soft); color: #844d35; }
+.allergen-progress-card { overflow: hidden; background: linear-gradient(145deg, var(--paper) 58%, rgba(250, 225, 209, 0.56)); }
+.allergen-progress-bar { width: 100%; height: 7px; margin-top: 17px; overflow: hidden; border-radius: 999px; background: rgba(201, 117, 71, 0.12); }
+.allergen-progress-bar i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #d79974, #c97547); transition: width 220ms ease; }
+.allergen-group-list { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; margin-top: 14px; }
+.allergen-group-list > span { display: flex; min-width: 0; min-height: 36px; align-items: center; gap: 6px; padding: 8px; border: 1px solid var(--line); border-radius: 12px; background: rgba(255, 253, 248, 0.62); color: var(--ink-soft); font-size: 9px; font-weight: 700; }
+.allergen-group-list > span > i { display: grid; width: 17px; height: 17px; flex: 0 0 auto; place-items: center; border-radius: 50%; background: var(--canvas); font-size: 9px; font-style: normal; }
+.allergen-group-list > span.is-passed { border-color: rgba(80, 102, 78, 0.2); background: rgba(223, 232, 217, 0.64); color: var(--sage-deep); }
+.allergen-group-list > span.is-testing { border-color: rgba(201, 117, 71, 0.28); background: var(--apricot-soft); color: #8f563b; }
+.allergen-group-list > span.is-attention { border-color: rgba(161, 76, 55, 0.32); background: #f8ded5; color: #934734; }
+.allergen-progress-summary { margin: 13px 0 0; color: var(--ink-soft); font-size: 9px; line-height: 1.6; }
 .book-reference { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); color: var(--ink-soft); font-size: 10px; }
 .book-reference strong { color: var(--sage-deep); }
 

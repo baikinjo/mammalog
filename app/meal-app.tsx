@@ -34,6 +34,7 @@ import {
   resolveMealTimes,
 } from "../lib/recommendation-engine";
 import type {
+  AllergenGroup,
   BabyProfile,
   ChildIngredientState,
   DailyRoutineLog,
@@ -235,6 +236,7 @@ function customIngredientTraits(category: IngredientCategory, assetId: string) {
     minimumAgeMonths: template?.minimumAgeMonths ?? 6,
     color: template?.color,
     allergen: template?.allergen,
+    allergenGroup: template?.allergenGroup,
     frequencyCap7Days: template?.frequencyCap7Days,
     preparationConstraints: template?.preparationConstraints ?? [],
     chokingFormBlacklist: template?.chokingFormBlacklist ?? [],
@@ -256,6 +258,16 @@ const stageLabels = {
   middle: "중기",
   late: "후기",
   completion: "완료기",
+};
+
+const allergenGroupLabels: Record<AllergenGroup, string> = {
+  egg: "계란",
+  milk: "우유",
+  soy: "대두",
+  wheat: "밀",
+  peanut: "땅콩",
+  crustacean: "새우",
+  peach: "복숭아",
 };
 
 const ingredientStageRank: Record<Exclude<WeaningStage, "prestart">, number> = {
@@ -654,7 +666,7 @@ function TodayMeal({
         testLabel: focusedRecord
           ? `기록 완료 · ${completionLabels[focusedRecord.completion]}`
           : focusedMealIncludesTrial && bookPlan.currentTrial
-            ? `${bookPlan.currentTrial.name} ${bookPlan.trialDay ?? 1}/3일`
+            ? `${bookPlan.currentTrial.allergenGroup ? `알레르기 확인 · ${allergenGroupLabels[bookPlan.currentTrial.allergenGroup]} · ` : ""}${bookPlan.currentTrial.name} ${bookPlan.trialDay ?? 1}/3일`
             : null,
         reasons: focusedMeal.reasons,
       };
@@ -868,6 +880,7 @@ function IngredientsView({
 }) {
   const [selectedCategory, setSelectedCategory] = useState<IngredientCategory | "all">("all");
   const [selectedAvailability, setSelectedAvailability] = useState<"current" | "later" | "all">("current");
+  const [selectedTrait, setSelectedTrait] = useState<"all" | "allergen">("all");
   const stateByIngredient = useMemo(
     () => new Map(ingredientStates.map((state) => [state.ingredientId, state])),
     [ingredientStates],
@@ -878,12 +891,29 @@ function IngredientsView({
       && ingredient.introductionPriority > currentTrial.introductionPriority,
   ) ?? ingredients.find((ingredient) => ingredient.id !== currentTrial.id) ?? currentTrial;
   const currentStageRank = ingredientStageRank[plan.stage];
+  const allergenProgress = (Object.keys(allergenGroupLabels) as AllergenGroup[]).map((group) => {
+    const groupIngredientIds = ingredients.filter((ingredient) => ingredient.allergenGroup === group).map((ingredient) => ingredient.id);
+    const groupStates = groupIngredientIds.map((id) => stateByIngredient.get(id)).filter((state): state is ChildIngredientState => Boolean(state));
+    const status = groupStates.some((state) => ["suspectedReaction", "avoid"].includes(state.status))
+      ? "attention"
+      : groupStates.some((state) => state.status === "testing")
+        ? "testing"
+        : groupStates.some((state) => state.status === "passed")
+          ? "passed"
+          : "waiting";
+    return { group, status } as const;
+  });
+  const passedAllergenGroups = allergenProgress.filter((item) => item.status === "passed").length;
+  const activeAllergenGroups = allergenProgress.filter((item) => item.status === "testing").length;
+  const attentionAllergenGroups = allergenProgress.filter((item) => item.status === "attention").length;
+  const allergenIngredientCount = ingredients.filter((ingredient) => ingredient.allergenGroup).length;
   const visibleIngredients = ingredients.filter((ingredient) => {
     const categoryMatches = selectedCategory === "all" || ingredient.category === selectedCategory;
+    const traitMatches = selectedTrait === "all" || Boolean(ingredient.allergenGroup);
     const isAvailable = ingredientStageRank[ingredient.minimumStage] <= currentStageRank;
     const availabilityMatches = selectedAvailability === "all"
       || (selectedAvailability === "current" ? isAvailable : !isAvailable);
-    return categoryMatches && availabilityMatches;
+    return categoryMatches && traitMatches && availabilityMatches;
   });
 
   return (
@@ -898,15 +928,33 @@ function IngredientsView({
 
       <section className="ingredient-status-grid">
         <button className="status-card testing-card" type="button" onClick={() => onSelect(currentTrial)}>
-          <span className="status-label">{plan.trialDay && plan.trialDay > 1 ? "도입 중" : "테스트 예정"}</span>
+          <span className="status-card-label-row"><span className="status-label">{plan.trialDay && plan.trialDay > 1 ? "도입 중" : "테스트 예정"}</span>{currentTrial.allergenGroup && <em className="allergen-badge">알레르기 · {allergenGroupLabels[currentTrial.allergenGroup]}</em>}</span>
           <div className="ingredient-large"><IngredientVisual ingredient={currentTrial} className="is-large" /><strong>{currentTrial.name}</strong></div>
           <p>{plan.trialDay ?? 1}/3일 · 기록에 따라 갱신 <ChevronRight size={14} aria-hidden="true" /></p>
         </button>
         <button className="status-card next-card" type="button" onClick={() => onSelect(nextIngredient)}>
-          <span className="status-label">그다음</span>
+          <span className="status-card-label-row"><span className="status-label">그다음</span>{nextIngredient.allergenGroup && <em className="allergen-badge">알레르기 · {allergenGroupLabels[nextIngredient.allergenGroup]}</em>}</span>
           <div className="ingredient-large"><IngredientVisual ingredient={nextIngredient} className="is-large" /><strong>{nextIngredient.name}</strong></div>
           <p>{introductionGroupLabels[currentTrial.introductionGroup]} 적응 후 <ChevronRight size={14} aria-hidden="true" /></p>
         </button>
+      </section>
+
+      <section className="section-card allergen-progress-card">
+        <div className="section-heading">
+          <div><span className="overline">새 재료 한 가지씩</span><h2>알레르기 재료 확인</h2></div>
+          <span className="count-badge">{passedAllergenGroups}/7 그룹</span>
+        </div>
+        <p className="catalog-note">같은 원료의 식품은 한 그룹으로 묶었어요. 반응이 의심된 그룹은 자동 추천에서 제외됩니다.</p>
+        <div className="allergen-progress-bar" aria-label={`알레르기 재료 ${passedAllergenGroups}/7 그룹 통과`}><i style={{ width: `${passedAllergenGroups / 7 * 100}%` }} /></div>
+        <div className="allergen-group-list">
+          {allergenProgress.map((item) => (
+            <span className={`is-${item.status}`} key={item.group}>
+              <i aria-hidden="true">{item.status === "passed" ? "✓" : item.status === "testing" ? "·" : item.status === "attention" ? "!" : "○"}</i>
+              {allergenGroupLabels[item.group]}
+            </span>
+          ))}
+        </div>
+        <p className="allergen-progress-summary">도입 중 {activeAllergenGroups} · 확인 필요 {attentionAllergenGroups} · 아직 확인 전 {7 - passedAllergenGroups - activeAllergenGroups - attentionAllergenGroups}</p>
       </section>
 
       <section className="section-card">
@@ -922,6 +970,10 @@ function IngredientsView({
           <button className={selectedAvailability === "current" ? "is-selected" : ""} type="button" onClick={() => setSelectedAvailability("current")}>현재 단계에서 사용</button>
           <button className={selectedAvailability === "later" ? "is-selected" : ""} type="button" onClick={() => setSelectedAvailability("later")}>나중에 열림</button>
           <button className={selectedAvailability === "all" ? "is-selected" : ""} type="button" onClick={() => setSelectedAvailability("all")}>전체 보기</button>
+        </div>
+        <div className="ingredient-filters trait-filters" aria-label="재료 특성 필터">
+          <button className={selectedTrait === "all" ? "is-selected" : ""} type="button" onClick={() => setSelectedTrait("all")}>모든 재료</button>
+          <button className={selectedTrait === "allergen" ? "is-selected allergen-filter" : "allergen-filter"} type="button" onClick={() => setSelectedTrait("allergen")}>알레르기 주의 {allergenIngredientCount}</button>
         </div>
         <div className="ingredient-filters" aria-label="재료 식품군 필터">
           <button className={selectedCategory === "all" ? "is-selected" : ""} type="button" onClick={() => setSelectedCategory("all")}>전체</button>
@@ -944,7 +996,7 @@ function IngredientsView({
               <button className="ingredient-row" type="button" key={ingredient.id} onClick={() => onSelect(ingredient)}>
                 <IngredientVisual ingredient={ingredient} />
                 <div>
-                  <strong>{ingredient.name}</strong>
+                  <span className="ingredient-name-row"><strong>{ingredient.name}</strong>{ingredient.allergenGroup && <em className="allergen-badge">알레르기 · {allergenGroupLabels[ingredient.allergenGroup]}</em>}</span>
                   <span>{isCustom ? `직접 추가 · ${categoryLabels[ingredient.category]}` : `${introductionGroupLabels[ingredient.introductionGroup]} · 만 ${ingredient.minimumAgeMonths ?? 6}개월부터`} · {status}{state?.status === "testing" ? ` ${state.testDay ?? 1}/3일` : ""}</span>
                 </div>
                 <span className="ingredient-order"><i>{String(ingredient.introductionPriority).padStart(2, "0")}</i><ChevronRight size={16} aria-hidden="true" /></span>
@@ -1629,6 +1681,7 @@ function IngredientSheet({
         </div>
         <dl className="detail-list">
           <div><dt>책의 흐름</dt><dd>{guidance}</dd></div>
+          {ingredient.allergenGroup && <div><dt>알레르기 주의</dt><dd>{allergenGroupLabels[ingredient.allergenGroup]} 관련 재료 · 다른 새 재료와 겹치지 않게 한 가지씩 기록해요.</dd></div>}
           <div><dt>도입 시기</dt><dd>만 {ingredient.minimumAgeMonths ?? 6}개월부터 · {stageLabels[ingredient.minimumStage]}</dd></div>
           <div><dt>조리·안전</dt><dd>{preparation}</dd></div>
           {ingredient.frequencyCap7Days && <div><dt>빈도 제한</dt><dd>최근 7일 최대 {ingredient.frequencyCap7Days}회</dd></div>}

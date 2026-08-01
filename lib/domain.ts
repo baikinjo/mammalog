@@ -40,6 +40,15 @@ export type IntroductionGroup =
   | "fruit"
   | "other";
 
+export type AllergenGroup =
+  | "egg"
+  | "milk"
+  | "soy"
+  | "wheat"
+  | "peanut"
+  | "crustacean"
+  | "peach";
+
 export type IngredientStatus =
   | "locked"
   | "ready"
@@ -138,6 +147,7 @@ export interface IngredientDefinition {
   introductionPriority: number;
   color?: string;
   allergen?: boolean;
+  allergenGroup?: AllergenGroup;
   frequencyCap7Days?: number;
   preparationConstraints?: string[];
   chokingFormBlacklist?: string[];

@@ -252,6 +252,7 @@ export async function loadCustomIngredients(householdId: string): Promise<Ingred
       introductionPriority: row.introduction_priority,
       color: row.color ?? template?.color,
       allergen: row.allergen ?? template?.allergen ?? false,
+      allergenGroup: template?.allergenGroup,
       frequencyCap7Days: row.frequency_cap_7d ?? template?.frequencyCap7Days,
       preparationConstraints: row.preparation_constraints?.length ? row.preparation_constraints : template?.preparationConstraints ?? [],
       chokingFormBlacklist: row.choking_form_blacklist?.length ? row.choking_form_blacklist : template?.chokingFormBlacklist ?? [],
