@@ -911,6 +911,9 @@ function RecordsView({
     .sort((left, right) => left.mealIndex - right.mealIndex);
   const recordDates = useMemo(() => new Set(records.map((record) => record.date)), [records]);
   const selectedLabel = formatKoreanDate(selectedDate);
+  const today = parseDateId(todayId);
+  const canMoveToNextMonth = calendarCursor.year < today.getFullYear()
+    || (calendarCursor.year === today.getFullYear() && calendarCursor.month < today.getMonth());
   const selectedMealIndexes = new Set(selectedRecords.map((record) => record.mealIndex));
   const completedMealCount = Array.from({ length: mealCount }, (_, index) => index + 1)
     .filter((mealIndex) => selectedMealIndexes.has(mealIndex)).length;
@@ -940,7 +943,7 @@ function RecordsView({
         <div className="month-navigation">
           <button type="button" onClick={() => onMoveMonth(-1)} aria-label="이전 달"><ChevronLeft size={19} /></button>
           <strong>{calendarCursor.year}년 {calendarCursor.month + 1}월</strong>
-          <button type="button" onClick={() => onMoveMonth(1)} aria-label="다음 달"><ChevronRight size={19} /></button>
+          <button type="button" onClick={() => onMoveMonth(1)} aria-label="다음 달" disabled={!canMoveToNextMonth}><ChevronRight size={19} /></button>
         </div>
         <div className="calendar-weekdays" aria-hidden="true">
           {weekdayLabels.map((weekday) => <span key={weekday}>{weekday}</span>)}
@@ -949,13 +952,15 @@ function RecordsView({
           {Array.from({ length: firstDayOffset }, (_, index) => <span className="calendar-blank" key={`blank-${index}`} />)}
           {monthDays.map((day) => {
             const hasRecord = recordDates.has(day.id);
+            const isFutureDay = day.id > todayId;
             return (
               <button
-                className={`calendar-day ${hasRecord ? "has-record" : ""} ${selectedDate === day.id ? "is-selected" : ""} ${todayId === day.id ? "is-today" : ""}`}
+                className={`calendar-day ${hasRecord ? "has-record" : ""} ${selectedDate === day.id ? "is-selected" : ""} ${todayId === day.id ? "is-today" : ""} ${isFutureDay ? "is-future" : ""}`}
                 type="button"
                 key={day.id}
                 onClick={() => onSelectDate(day.id)}
-                aria-label={`${day.label}${todayId === day.id ? ", 오늘" : ""}${hasRecord ? ", 식사 기록 있음" : ""}`}
+                disabled={isFutureDay}
+                aria-label={`${day.label}${todayId === day.id ? ", 오늘" : ""}${isFutureDay ? ", 미래 날짜 선택 불가" : ""}${hasRecord ? ", 식사 기록 있음" : ""}`}
                 aria-pressed={selectedDate === day.id}
               >
                 <span>{day.day}</span><i aria-hidden="true" />
@@ -965,7 +970,7 @@ function RecordsView({
         </div>
         <div className="calendar-footer">
           <span className="record-dot-key"><i aria-hidden="true" /> 기록 있음</span>
-          <p className="calendar-hint">이전·다음 달로 이동하고 원하는 날짜를 눌러 기록을 확인하세요.</p>
+          <p className="calendar-hint">과거 날짜는 기록을 추가·수정할 수 있고, 미래 날짜는 선택할 수 없어요.</p>
         </div>
       </section>
 
@@ -2321,6 +2326,9 @@ export function MealApp() {
   };
 
   const moveCalendarMonth = (direction: -1 | 1) => {
+    const today = parseDateId(todayId);
+    const isCurrentMonth = calendarCursor.year === today.getFullYear() && calendarCursor.month === today.getMonth();
+    if (direction === 1 && isCurrentMonth) return;
     const next = new Date(calendarCursor.year, calendarCursor.month + direction, 1);
     setSelectedDate(toDateId(next));
     setCalendarCursor({ year: next.getFullYear(), month: next.getMonth() });
