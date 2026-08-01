@@ -810,13 +810,20 @@ button {
 .sync-status { flex: 0 0 auto; padding: 7px 10px; border-radius: 999px; background: var(--canvas); color: var(--ink-soft); font-size: 10px; font-weight: 700; }
 .sync-status.is-connected { background: var(--sage-soft); color: var(--sage-deep); }
 .sync-copy { margin: 16px 0 0; color: var(--ink-soft); font-size: 11px; line-height: 1.7; }
-.device-connect-panel { display: grid; gap: 14px; margin-top: 2px; }
+.device-connect-panel { display: grid; gap: 16px; margin-top: 18px; }
 .device-connect-panel .primary-action { display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
 .device-connect-panel .primary-action:disabled { cursor: wait; opacity: 0.72; }
-.email-login-details { border-top: 1px solid var(--line); padding-top: 12px; }
-.email-login-details summary { color: var(--ink-soft); font-size: 10px; font-weight: 700; cursor: pointer; }
-.email-login-details .sync-form { margin-top: 13px; }
-.email-login-details small { color: var(--ink-soft); font-size: 9px; line-height: 1.55; }
+.email-login-panel { padding: 16px; border: 1px solid rgba(80, 102, 78, 0.24); border-radius: 20px; background: rgba(223, 232, 217, 0.26); }
+.login-panel-heading { display: flex; align-items: center; gap: 11px; }
+.login-panel-heading > div { display: grid; gap: 3px; }
+.login-panel-heading strong { font-size: 13px; }
+.login-panel-heading p { margin: 0; color: var(--ink-soft); font-size: 10px; line-height: 1.55; }
+.login-panel-icon { display: grid; width: 38px; height: 38px; flex: 0 0 auto; place-items: center; border-radius: 13px; background: var(--sage-soft); color: var(--sage-deep); }
+.email-login-panel .sync-form { margin-top: 14px; }
+.email-login-panel small,
+.guest-connect-panel small { color: var(--ink-soft); font-size: 9px; line-height: 1.55; }
+.guest-connect-panel { display: grid; gap: 8px; }
+.guest-connect-panel small { padding-inline: 3px; }
 .sync-form,
 .sync-setup,
 .sync-connected { display: grid; gap: 14px; margin-top: 18px; }

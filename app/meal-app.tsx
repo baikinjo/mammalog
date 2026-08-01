@@ -11,6 +11,7 @@ import {
   Download,
   Link2,
   LogOut,
+  Mail,
   House,
   Info,
   Plus,
@@ -1577,16 +1578,25 @@ function FamilySyncSection({ onWorkspaceChange }: { onWorkspaceChange: () => voi
 
       {configured && !userEmail && (
         <div className="device-connect-panel">
-          <p className="sync-copy">이 아이폰을 보호자 기기로 연결한 뒤, 배우자에게 받은 가족 코드로 같은 기록에 참여하세요.</p>
-          <button className="primary-action" type="button" disabled={loading} onClick={() => void connectThisDevice()}><Link2 size={17} aria-hidden="true" /> {loading ? "이 기기 연결 중…" : "이 기기 바로 연결"}</button>
-          <details className="email-login-details">
-            <summary>기존 이메일 계정으로 로그인</summary>
+          <div className="email-login-panel">
+            <div className="login-panel-heading">
+              <span className="login-panel-icon"><Mail size={18} aria-hidden="true" /></span>
+              <div>
+                <strong>이메일로 로그인</strong>
+                <p>비밀번호 없이 받은 링크를 열면 로그인돼요.</p>
+              </div>
+            </div>
             <form className="sync-form" onSubmit={requestLogin}>
-              <label><span>이메일</span><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@example.com" required disabled={loading} /></label>
-              <button className="secondary-action" type="submit" disabled={loading}>로그인 링크 받기</button>
-              <small>무료 기본 메일은 발송 수와 받을 수 있는 주소가 제한될 수 있어요.</small>
+              <label><span>이메일</span><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@example.com" autoComplete="email" inputMode="email" required disabled={loading} /></label>
+              <button className="primary-action" type="submit" disabled={loading}><Mail size={17} aria-hidden="true" /> {loading ? "로그인 링크 보내는 중…" : "이메일 로그인 링크 받기"}</button>
+              <small>아이폰·아이패드마다 같은 이메일로 로그인하면 내 가족 공간을 다시 찾을 수 있어요.</small>
             </form>
-          </details>
+          </div>
+          <div className="sync-divider"><span>또는</span></div>
+          <div className="guest-connect-panel">
+            <button className="secondary-action" type="button" disabled={loading} onClick={() => void connectThisDevice()}><Link2 size={17} aria-hidden="true" /> {loading ? "이 기기 연결 중…" : "이 기기만 임시로 사용"}</button>
+            <small>이메일 없이 바로 시작할 수 있지만, 로그아웃하거나 기기를 바꾸면 이 계정을 다시 찾을 수 없어요.</small>
+          </div>
         </div>
       )}
 
