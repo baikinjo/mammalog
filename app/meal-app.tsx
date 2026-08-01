@@ -1308,8 +1308,8 @@ function FamilyMemberRemovalSheet({
   };
 
   return (
-    <div className="sheet-backdrop" role="presentation" onMouseDown={onClose}>
-      <section className="record-sheet compact-sheet data-control-sheet" role="dialog" aria-modal="true" aria-labelledby="member-removal-title" onMouseDown={(event) => event.stopPropagation()}>
+    <div className="sheet-backdrop member-removal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="record-sheet compact-sheet data-control-sheet member-removal-sheet" role="dialog" aria-modal="true" aria-labelledby="member-removal-title" onMouseDown={(event) => event.stopPropagation()}>
         <div className="sheet-handle" aria-hidden="true" />
         <div className="sheet-heading">
           <div><span className="overline">가족 관리자 권한</span><h2 id="member-removal-title">{member.displayName}님의 연결을 해제할까요?</h2></div>

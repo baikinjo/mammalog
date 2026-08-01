@@ -152,7 +152,7 @@ button {
   display: grid;
   min-width: 0;
   gap: 18px;
-  animation: page-in 360ms ease both;
+  animation: page-in 360ms ease;
 }
 
 .app-main > *,
@@ -1084,6 +1084,15 @@ textarea:focus-visible {
   .section-card { padding: 28px; }
   .meal-card { padding-inline: 32px; }
   .meal-visual { margin-inline: -32px; }
+  .member-removal-backdrop { place-items: center; padding: 32px; }
+  .member-removal-sheet {
+    width: min(100%, 560px);
+    max-height: min(calc(var(--sheet-visual-height, 100dvh) - 64px), 760px);
+    padding: 26px 30px 30px;
+    border-radius: 28px;
+    box-shadow: 0 24px 80px rgba(48, 47, 42, 0.24);
+  }
+  .member-removal-sheet .sheet-handle { display: none; }
 }
 
 @media (max-width: 620px) {
