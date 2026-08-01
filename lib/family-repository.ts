@@ -5,6 +5,7 @@ import type {
   IngredientDefinition,
   MealHistoryEntry,
 } from "./domain";
+import { ingredientById } from "./ingredient-catalog";
 import { getSupabaseClient } from "./supabase-client";
 
 export interface FamilyMember {
@@ -171,23 +172,29 @@ export async function loadCustomIngredients(householdId: string): Promise<Ingred
     .order("created_at");
   if (error) throw error;
 
-  return (data ?? []).map((row) => ({
-    id: row.id,
-    name: row.name,
-    emoji: row.emoji ?? "",
-    assetId: row.asset_id ?? undefined,
-    category: row.category,
-    foodGroup: row.food_group ?? undefined,
-    introductionGroup: row.introduction_group,
-    minimumStage: row.minimum_stage,
-    minimumAgeMonths: row.minimum_age_months ?? 6,
-    introductionPriority: row.introduction_priority,
-    preparationConstraints: row.preparation_constraints ?? [],
-    chokingFormBlacklist: row.choking_form_blacklist ?? [],
-    bookGuidance: row.book_guidance ?? undefined,
-    sourcePages: row.source_pages ?? [],
-    tags: row.tags ?? [],
-  }));
+  return (data ?? []).map((row) => {
+    const template = ingredientById.get(row.asset_id ?? "");
+    return {
+      id: row.id,
+      name: row.name,
+      emoji: row.emoji ?? "",
+      assetId: row.asset_id ?? undefined,
+      category: row.category,
+      foodGroup: row.food_group ?? template?.foodGroup,
+      introductionGroup: row.introduction_group ?? template?.introductionGroup ?? "other",
+      minimumStage: row.minimum_stage ?? template?.minimumStage ?? "initial",
+      minimumAgeMonths: row.minimum_age_months ?? template?.minimumAgeMonths ?? 6,
+      introductionPriority: row.introduction_priority,
+      color: row.color ?? template?.color,
+      allergen: row.allergen ?? template?.allergen ?? false,
+      frequencyCap7Days: row.frequency_cap_7d ?? template?.frequencyCap7Days,
+      preparationConstraints: row.preparation_constraints?.length ? row.preparation_constraints : template?.preparationConstraints ?? [],
+      chokingFormBlacklist: row.choking_form_blacklist?.length ? row.choking_form_blacklist : template?.chokingFormBlacklist ?? [],
+      bookGuidance: row.book_guidance ?? undefined,
+      sourcePages: row.source_pages ?? [],
+      tags: row.tags?.length ? row.tags : template?.tags ?? [],
+    };
+  });
 }
 
 export async function saveCustomIngredient(
@@ -201,10 +208,14 @@ export async function saveCustomIngredient(
     emoji: ingredient.emoji,
     asset_id: ingredient.assetId ?? null,
     category: ingredient.category,
+    food_group: ingredient.foodGroup ?? null,
     introduction_group: ingredient.introductionGroup,
     minimum_stage: ingredient.minimumStage,
     minimum_age_months: ingredient.minimumAgeMonths ?? 6,
     introduction_priority: ingredient.introductionPriority,
+    color: ingredient.color ?? null,
+    allergen: ingredient.allergen ?? false,
+    frequency_cap_7d: ingredient.frequencyCap7Days ?? null,
     preparation_constraints: ingredient.preparationConstraints ?? [],
     choking_form_blacklist: ingredient.chokingFormBlacklist ?? [],
     book_guidance: ingredient.bookGuidance ?? "가족이 직접 추가한 재료예요. 도입 시기와 반응을 직접 기록해요.",
@@ -226,10 +237,17 @@ export async function updateCustomIngredient(
       name: ingredient.name,
       asset_id: ingredient.assetId ?? null,
       category: ingredient.category,
+      food_group: ingredient.foodGroup ?? null,
       introduction_group: ingredient.introductionGroup,
       minimum_stage: ingredient.minimumStage,
       minimum_age_months: ingredient.minimumAgeMonths ?? 6,
+      color: ingredient.color ?? null,
+      allergen: ingredient.allergen ?? false,
+      frequency_cap_7d: ingredient.frequencyCap7Days ?? null,
+      preparation_constraints: ingredient.preparationConstraints ?? [],
+      choking_form_blacklist: ingredient.chokingFormBlacklist ?? [],
       book_guidance: ingredient.bookGuidance ?? "가족이 직접 추가한 재료예요. 도입 시기와 반응을 직접 기록해요.",
+      tags: ingredient.tags ?? [],
     })
     .eq("id", ingredient.id)
     .eq("household_id", householdId)

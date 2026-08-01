@@ -34,6 +34,7 @@ import type {
   ChildIngredientState,
   DailyRecommendation,
   DevelopmentSkills,
+  FoodGroup,
   IngredientCategory,
   IngredientDefinition,
   IntroductionGroup,
@@ -183,6 +184,35 @@ const introductionGroupByCategory: Record<IngredientCategory, IntroductionGroup>
   beans: "other",
   nutsOil: "other",
 };
+
+const foodGroupByCategory: Record<IngredientCategory, FoodGroup> = {
+  grain: "grain",
+  meat: "redMeat",
+  vegetable: "otherVegetable",
+  fruit: "fruit",
+  fish: "fish",
+  seaweed: "otherVegetable",
+  dairy: "dairy",
+  egg: "egg",
+  beans: "legume",
+  nutsOil: "fat",
+};
+
+function customIngredientTraits(category: IngredientCategory, assetId: string) {
+  const template = ingredientDefinitions.find((ingredient) => ingredient.id === assetId);
+  return {
+    foodGroup: template?.foodGroup ?? foodGroupByCategory[category],
+    introductionGroup: template?.introductionGroup ?? introductionGroupByCategory[category],
+    minimumStage: template?.minimumStage ?? "initial",
+    minimumAgeMonths: template?.minimumAgeMonths ?? 6,
+    color: template?.color,
+    allergen: template?.allergen,
+    frequencyCap7Days: template?.frequencyCap7Days,
+    preparationConstraints: template?.preparationConstraints ?? [],
+    chokingFormBlacklist: template?.chokingFormBlacklist ?? [],
+    tags: template?.tags ?? [],
+  } satisfies Partial<IngredientDefinition>;
+}
 
 const introductionGroupLabels: Record<IntroductionGroup, string> = {
   grain: "곡류",
@@ -410,12 +440,14 @@ function TodayPrepare({ profile, onPreview }: { profile: BabyProfile; onPreview:
 
 function TodayMeal({
   profile,
+  ingredients,
   ingredientStates,
   mealHistory,
   onBack,
   onRecord,
 }: {
   profile: BabyProfile;
+  ingredients: IngredientDefinition[];
   ingredientStates: ChildIngredientState[];
   mealHistory: MealHistoryEntry[];
   onBack: () => void;
@@ -425,18 +457,18 @@ function TodayMeal({
   const bookPlan = useMemo(
     () => createBookBasedDayPlan(
       planProfile,
-      ingredientDefinitions,
+      ingredients,
       ingredientStates,
       mealHistory,
     ),
-    [ingredientStates, mealHistory, planProfile],
+    [ingredientStates, ingredients, mealHistory, planProfile],
   );
   const suggestion = useMemo(
     (): MealSuggestion => {
       if (profile.stage === "prestart") {
         return createInitialMealSuggestion(
           profile,
-          ingredientDefinitions,
+          ingredients,
           ingredientStates,
           mealHistory,
         );
@@ -452,7 +484,7 @@ function TodayMeal({
         reasons: meal.reasons,
       };
     },
-    [bookPlan, ingredientStates, mealHistory, profile],
+    [bookPlan, ingredientStates, ingredients, mealHistory, profile],
   );
   const [simpleRice, setSimpleRice] = useState(false);
   const canChooseSimpleRice = suggestion.ingredients.some((ingredient) => ingredient.id === "rice")
@@ -1298,7 +1330,7 @@ function EditCustomIngredientSheet({
         name: name.trim(),
         category,
         assetId,
-        introductionGroup: introductionGroupByCategory[category],
+        ...customIngredientTraits(category, assetId),
       });
     } finally {
       setSaving(false);
@@ -1783,11 +1815,11 @@ export function MealApp() {
   const currentPlan = useMemo(
     () => createBookBasedDayPlan(
       recommendationProfile(displayProfile),
-      ingredientDefinitions,
+      allIngredients,
       ingredientStates,
       mealHistory,
     ),
-    [displayProfile, ingredientStates, mealHistory],
+    [allIngredients, displayProfile, ingredientStates, mealHistory],
   );
   const editingRecord = records.find((record) => record.date === recordTargetDate && record.mealIndex === recordTargetMealIndex) ?? null;
   const recordPlannedTime = editingRecord?.plannedTime
@@ -1911,7 +1943,7 @@ export function MealApp() {
     const planProfile = recommendationProfile(currentChild);
     const plan = createBookBasedDayPlan(
       planProfile,
-      ingredientDefinitions,
+      allIngredients,
       ingredientStates,
       mealHistory,
       parseDateId(recordTargetDate),
@@ -1924,7 +1956,7 @@ export function MealApp() {
 
     try {
       const chosenIngredientIds = editingRecord?.ingredientIds ?? recordIngredientIds;
-      const chosenIngredients = chosenIngredientIds?.map((id) => ingredientDefinitions.find((ingredient) => ingredient.id === id)).filter((ingredient): ingredient is IngredientDefinition => Boolean(ingredient));
+      const chosenIngredients = chosenIngredientIds?.map((id) => allIngredients.find((ingredient) => ingredient.id === id)).filter((ingredient): ingredient is IngredientDefinition => Boolean(ingredient));
       const recordedIngredients = chosenIngredients?.length ? chosenIngredients : meal.items.map((item) => item.ingredient);
       await saveFamilyMealRecord({
         childId: currentChild.id,
@@ -1996,9 +2028,7 @@ export function MealApp() {
       emoji: "",
       assetId,
       category,
-      introductionGroup: introductionGroupByCategory[category],
-      minimumStage: "initial",
-      minimumAgeMonths: 6,
+      ...customIngredientTraits(category, assetId),
       introductionPriority: nextPriority,
       bookGuidance: "가족이 직접 추가한 재료예요. 아이의 진행 상태에 맞춰 도입 시기를 정해요.",
     };
@@ -2192,6 +2222,7 @@ export function MealApp() {
           previewStarted ? (
             <TodayMeal
               profile={displayProfile}
+              ingredients={allIngredients}
               ingredientStates={ingredientStates}
               mealHistory={mealHistory}
               onBack={() => setPreviewStarted(false)}

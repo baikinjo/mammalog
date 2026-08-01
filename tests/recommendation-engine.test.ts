@@ -200,3 +200,64 @@ test("holds texture at the safe minimum while the mouth is painful", () => {
   assert.match(plan.meals[0].textureGuide, /^5mm/);
   assert.match(plan.safetyNotes[0], /입안이 아픈 상태/);
 });
+
+test("counts a planned fruit snack toward the daily food-group balance", () => {
+  const profile: BabyProfile = { ...baseProfile, stage: "middle", ageMonths: 8, mealsPerDay: 2, snacksPerDay: 1, textureMm: 3 };
+  const states = ["rice", "beef", "cabbage", "pumpkin", "apple"].map(passed);
+  const plan = createBookBasedDayPlan(profile, ingredientCatalog, states, [], new Date("2026-07-31T12:00:00.000Z"));
+
+  assert.equal(plan.snacks.some((snack) => snack.items.some((item) => item.ingredient.id === "apple")), true);
+  assert.equal(plan.checks.find((check) => check.id === "fruit")?.met, true);
+});
+
+test("does not exceed the weekly fish cap inside a newly assembled day", () => {
+  const profile: BabyProfile = { ...baseProfile, stage: "middle", ageMonths: 8, mealsPerDay: 3, snacksPerDay: 1, textureMm: 3 };
+  const states = ["rice", "cabbage", "pumpkin", "apple", "whitefish"].map(passed);
+  const history: MealHistoryEntry[] = [
+    { servedAt: "2026-07-29T10:00:00.000Z", ingredientIds: ["rice", "whitefish"], completion: "half", mealType: "meal" },
+  ];
+  const plan = createBookBasedDayPlan(profile, ingredientCatalog, states, history, new Date("2026-07-31T12:00:00.000Z"));
+  const fishMeals = plan.meals.filter((meal) => meal.items.some((item) => item.ingredient.foodGroup === "fish"));
+
+  assert.equal(fishMeals.length, 1);
+  assert.equal(plan.checks.find((check) => check.id === "fish-cap")?.met, true);
+});
+
+test("pauses an active fish trial when the weekly cap is already reached", () => {
+  const profile: BabyProfile = { ...baseProfile, stage: "middle", ageMonths: 8, mealsPerDay: 2, snacksPerDay: 1, textureMm: 3 };
+  const states: ChildIngredientState[] = [
+    passed("rice"),
+    { ingredientId: "whitefish", status: "testing", testDay: 3, exposureCount: 2, lastOfferedAt: "2026-07-30T10:00:00.000Z" },
+  ];
+  const history: MealHistoryEntry[] = [
+    { servedAt: "2026-07-29T10:00:00.000Z", ingredientIds: ["rice", "whitefish"], completion: "half", mealType: "meal" },
+    { servedAt: "2026-07-30T10:00:00.000Z", ingredientIds: ["rice", "whitefish"], completion: "most", mealType: "meal" },
+  ];
+
+  assert.equal(chooseNextIngredient(profile, ingredientCatalog, states, history, new Date("2026-07-31T12:00:00.000Z")), null);
+});
+
+test("includes passed custom ingredients in the recommendation engine", () => {
+  const customBeef = {
+    ...ingredientCatalog.find((ingredient) => ingredient.id === "beef")!,
+    id: "custom-family-beef",
+    name: "우리집 다짐육",
+    introductionPriority: 1000,
+  };
+  const definitions = ingredientCatalog.filter((ingredient) => ingredient.foodGroup !== "redMeat").concat(customBeef);
+  const states = ["rice", "cabbage", "pumpkin", "apple", customBeef.id].map(passed);
+  const plan = createBookBasedDayPlan(baseProfile, definitions, states, [], new Date("2026-07-31T12:00:00.000Z"));
+
+  assert.equal(plan.meals[0].items.some((item) => item.ingredient.id === customBeef.id), true);
+  assert.equal(plan.checks.find((check) => check.id === "daily-meat")?.met, true);
+});
+
+test("keeps acidic fruit out of a mouth-pain plan", () => {
+  const profile: BabyProfile = { ...baseProfile, stage: "middle", ageMonths: 8, mealsPerDay: 2, snacksPerDay: 1, textureMm: 3, temporaryCondition: "mouthPain" };
+  const states = ["rice", "beef", "cabbage", "pumpkin", "apple", "banana"].map(passed);
+  const plan = createBookBasedDayPlan(profile, ingredientCatalog, states, [], new Date("2026-07-31T12:00:00.000Z"));
+  const plannedIds = [...plan.meals, ...plan.snacks].flatMap((meal) => meal.items.map((item) => item.ingredient.id));
+
+  assert.equal(plannedIds.includes("apple"), false);
+  assert.equal(plannedIds.includes("banana"), true);
+});

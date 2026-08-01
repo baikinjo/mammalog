@@ -148,6 +148,9 @@ function hardBlocked(
   if (stageRank[ingredient.minimumStage] > stageRank[inferWeaningStage(profile)]) return true;
   if ((ingredient.minimumAgeMonths ?? 6) > ageForRules(profile)) return true;
   if (ingredient.foodGroup === "fish" && fishCount >= (ingredient.frequencyCap7Days ?? 2)) return true;
+  const tags = new Set(ingredient.tags ?? []);
+  if (profile.temporaryCondition === "mouthPain" && tags.has("acidic")) return true;
+  if (profile.temporaryCondition === "diarrhea" && (tags.has("sweet") || ingredient.foodGroup === "fat")) return true;
   return false;
 }
 
@@ -172,7 +175,11 @@ export function chooseNextIngredient(
 ): IngredientDefinition | null {
   const activeTest = states.find((state) => state.status === "testing");
   if (activeTest) {
-    return definitions.find((item) => item.id === activeTest.ingredientId) ?? null;
+    const activeIngredient = definitions.find((item) => item.id === activeTest.ingredientId);
+    const fishCount = countRecentFish(definitions, history, today);
+    return activeIngredient && !hardBlocked(profile, activeIngredient, activeTest, fishCount)
+      ? activeIngredient
+      : null;
   }
 
   const stateById = new Map(states.map((state) => [state.ingredientId, state]));
@@ -379,16 +386,17 @@ function developmentTaskFor(profile: BabyProfile, stage: Exclude<WeaningStage, "
 }
 
 function buildChecks(
+  profile: BabyProfile,
   stage: Exclude<WeaningStage, "prestart">,
-  meals: PlannedMeal[],
+  plannedItems: PlannedMeal[],
   introductionGroups: Set<IntroductionGroup>,
   fishCountBeforeToday: number,
   textureMm: number,
 ): TargetCheck[] {
-  const ingredients = meals.flatMap((meal) => meal.items.map((item) => item.ingredient));
+  const ingredients = plannedItems.flatMap((meal) => meal.items.map((item) => item.ingredient));
   const hasGroup = (...groups: FoodGroup[]) => ingredients.some((item) => item.foodGroup && groups.includes(item.foodGroup));
-  const newCount = new Set(meals.flatMap((meal) => meal.items.filter((item) => item.isNewExposure).map((item) => item.ingredient.id))).size;
-  const fishToday = meals.filter((meal) => meal.items.some((item) => item.ingredient.foodGroup === "fish")).length;
+  const newCount = new Set(plannedItems.flatMap((meal) => meal.items.filter((item) => item.isNewExposure).map((item) => item.ingredient.id))).size;
+  const fishToday = plannedItems.filter((meal) => meal.items.some((item) => item.ingredient.foodGroup === "fish")).length;
   const guide = getStageGuide(stage);
   const meatIntroduced = introductionGroups.has("meat");
   const checks: TargetCheck[] = [
@@ -398,6 +406,16 @@ function buildChecks(
     { id: "fish-cap", label: "생선 주 2회", met: fishCountBeforeToday + fishToday <= 2, detail: `최근 7일 ${fishCountBeforeToday + fishToday}/2회` },
     { id: "texture", label: "현재 질감", met: textureMm >= guide.textureMmRange[0], detail: `${textureMm}mm 안팎` },
   ];
+
+  if (profile.milkMlPerDay != null) {
+    const [minimumMilk, maximumMilk] = guide.milkMlRange;
+    checks.push({
+      id: "milk-flow",
+      label: "하루 수유 흐름",
+      met: profile.milkMlPerDay >= minimumMilk && profile.milkMlPerDay <= maximumMilk,
+      detail: `${profile.milkMlPerDay}ml 기록 · 책 범위 ${minimumMilk}~${maximumMilk}ml`,
+    });
+  }
 
   if (introductionGroups.has("leafy")) checks.splice(2, 0, { id: "leafy", label: "이파리 채소", met: hasGroup("leafyVegetable"), detail: "초록색 채소 포함" });
   if (introductionGroups.has("yellow")) checks.splice(3, 0, { id: "yellow", label: "노란 채소", met: hasGroup("yellowVegetable"), detail: "노랑·주황색 채소 포함" });
@@ -432,13 +450,20 @@ export function createBookBasedDayPlan(
   const dairy = byFoodGroup(passed, ["dairy"]);
   const textureMm = textureForDay(profile, history, guide.textureMmRange[0], guide.textureMmRange[1]);
   const mealCount = Math.max(guide.mealRange[0], Math.min(guide.mealRange[1], profile.mealsPerDay));
+  const fishCount = countRecentFish(definitions, history, today);
   const newId = currentTrial?.id ?? null;
   const meals: PlannedMeal[] = [];
 
   for (let index = 1; index <= mealCount; index += 1) {
+    const fishMealsAlreadyPlanned = meals.filter(
+      (meal) => meal.items.some((item) => item.ingredient.foodGroup === "fish"),
+    ).length;
+    const availableProteins = proteins.filter(
+      (item) => item.foodGroup !== "fish" || fishCount + fishMealsAlreadyPlanned < (item.frequencyCap7Days ?? 2),
+    );
     const selected = uniqueIngredients([
       chooseLeastRecent(grains, history, index - 1),
-      chooseLeastRecent(index === 1 ? redMeats : proteins, history, index - 1),
+      chooseLeastRecent(index === 1 ? redMeats : availableProteins, history, index - 1),
       chooseLeastRecent(leafy, history, index - 1),
       chooseLeastRecent(yellow, history, index - 1),
       stage === "initial" ? null : chooseLeastRecent(otherVegetables, history, index - 1),
@@ -481,8 +506,7 @@ export function createBookBasedDayPlan(
     });
   }
 
-  const fishCount = countRecentFish(definitions, history, today);
-  const checks = buildChecks(stage, meals, effectiveGroups, fishCount, textureMm);
+  const checks = buildChecks(profile, stage, [...meals, ...snacks], effectiveGroups, fishCount, textureMm);
   const condition = profile.temporaryCondition ?? "none";
   const safetyNotes = [
     "계란·고기·생선은 속까지 익히고, 단계보다 단단하거나 둥근 질식 위험 형태는 제외해요.",
