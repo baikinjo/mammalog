@@ -45,6 +45,7 @@ export interface SaveFamilyMealInput {
   date: string;
   mealIndex: number;
   plannedTime: string;
+  recordedAt?: string;
   title: string;
   ingredients: IngredientDefinition[];
   newExposureIngredientId?: string | null;
@@ -489,7 +490,7 @@ export async function saveFamilyMealRecord(input: SaveFamilyMealInput): Promise<
   );
   if (itemError) throw itemError;
 
-  const now = new Date().toISOString();
+  const now = input.recordedAt ?? new Date().toISOString();
   const { error: logError } = await client.from("meal_logs").upsert({
     meal_plan_id: plan.id,
     completion: input.completion,

@@ -257,6 +257,13 @@ function formatKoreanTime(time: string) {
   return `${period} ${displayHour}:${minute}`;
 }
 
+function mealTimestamp(dateId: string, time: string) {
+  const date = parseDateId(dateId);
+  const [hour = 12, minute = 0] = time.split(":").map(Number);
+  date.setHours(Number.isFinite(hour) ? hour : 12, Number.isFinite(minute) ? minute : 0, 0, 0);
+  return date.toISOString();
+}
+
 function dismissMobileKeyboard() {
   const activeElement = document.activeElement;
   if (activeElement instanceof HTMLElement) activeElement.blur();
@@ -875,22 +882,26 @@ function IngredientsView({
 function RecordsView({
   records,
   workspace,
+  mealCount,
   selectedDate,
   todayId,
   calendarCursor,
   onSelectDate,
   onMoveMonth,
   onGoToday,
+  onAddRecord,
   onEditRecord,
 }: {
   records: FamilyMealRecord[];
   workspace: FamilyWorkspace | null;
+  mealCount: number;
   selectedDate: string;
   todayId: string;
   calendarCursor: CalendarCursor;
   onSelectDate: (date: string) => void;
   onMoveMonth: (direction: -1 | 1) => void;
   onGoToday: () => void;
+  onAddRecord: (date: string) => void;
   onEditRecord: (record: FamilyMealRecord) => void;
 }) {
   const monthDays = useMemo(() => createMonthDays(calendarCursor), [calendarCursor]);
@@ -900,6 +911,11 @@ function RecordsView({
     .sort((left, right) => left.mealIndex - right.mealIndex);
   const recordDates = useMemo(() => new Set(records.map((record) => record.date)), [records]);
   const selectedLabel = formatKoreanDate(selectedDate);
+  const selectedMealIndexes = new Set(selectedRecords.map((record) => record.mealIndex));
+  const completedMealCount = Array.from({ length: mealCount }, (_, index) => index + 1)
+    .filter((mealIndex) => selectedMealIndexes.has(mealIndex)).length;
+  const isFutureDate = selectedDate > todayId;
+  const canAddRecord = !isFutureDate && completedMealCount < mealCount;
 
   return (
     <>
@@ -959,6 +975,12 @@ function RecordsView({
             <span className="overline">{selectedLabel}</span>
             <h2>{selectedRecords.length ? `${selectedRecords.length}번의 식사를 기록했어요` : "이날의 기록이 없어요"}</h2>
           </div>
+          {canAddRecord && (
+            <button className="add-past-record-button" type="button" onClick={() => onAddRecord(selectedDate)}>
+              <Plus size={15} aria-hidden="true" /> {selectedDate === todayId ? "오늘 식사 추가" : "이 날짜 식사 추가"}
+            </button>
+          )}
+          {!canAddRecord && !isFutureDate && <span className="count-badge">{mealCount}/{mealCount}끼 완료</span>}
         </div>
         {selectedRecords.length ? (
           <div className="saved-record-list">
@@ -980,7 +1002,9 @@ function RecordsView({
         ) : (
           <div className="empty-state">
             <span aria-hidden="true">◌</span>
-            <p>{records.length ? "달력에서 기록 표시가 있는 날짜를 눌러 확인할 수 있어요." : "이유식을 시작하면 섭취량, 반응, 질감 기록이 이곳에 쌓입니다."}</p>
+            <p>{isFutureDate
+              ? "미래 날짜의 식사는 아직 기록할 수 없어요."
+              : "기억나는 만큼만 추가해도 괜찮아요. 저장한 기록은 가족의 모든 기기에 동기화됩니다."}</p>
           </div>
         )}
       </section>
@@ -2149,6 +2173,7 @@ export function MealApp() {
         date: recordTargetDate,
         mealIndex: recordTargetMealIndex,
         plannedTime: meal.time,
+        recordedAt: mealTimestamp(recordTargetDate, meal.time),
         title: meal.title,
         ingredients: recordedIngredients,
         newExposureIngredientId: plan.currentTrial && meal.items.some((item) => item.ingredient.id === plan.currentTrial?.id)
@@ -2176,7 +2201,7 @@ export function MealApp() {
           ingredientStates,
           plan.currentTrial.id,
           outcome,
-          new Date().toISOString(),
+          mealTimestamp(recordTargetDate, meal.time),
           getStageGuide(plan.stage).newFoodIntervalDays[1],
           draft.note,
         );
@@ -2307,6 +2332,37 @@ export function MealApp() {
     setCalendarCursor({ year: today.getFullYear(), month: today.getMonth() });
   };
 
+  const addRecordForDate = (date: string) => {
+    if (!currentChild) {
+      setActiveTab("profile");
+      showToast("먼저 우리 아이 탭에서 가족 로그인을 연결해주세요.");
+      return;
+    }
+    if (date > todayId) {
+      showToast("미래 날짜의 식사는 아직 기록할 수 없어요.");
+      return;
+    }
+    const plan = createBookBasedDayPlan(
+      recommendationProfile(currentChild),
+      allIngredients,
+      ingredientStates,
+      mealHistory,
+      parseDateId(date),
+    );
+    const recordedMealIndexes = new Set(
+      records.filter((record) => record.date === date).map((record) => record.mealIndex),
+    );
+    const nextMeal = plan.meals.find((meal) => !recordedMealIndexes.has(meal.index));
+    if (!nextMeal) {
+      showToast("이 날짜의 식사는 모두 기록되어 있어요.");
+      return;
+    }
+    setRecordTargetDate(date);
+    setRecordTargetMealIndex(nextMeal.index);
+    setRecordIngredientIds(nextMeal.items.map((item) => item.ingredient.id));
+    setRecordOpen(true);
+  };
+
   const updateSetting = async (value: string) => {
     if (!editingSetting) return;
     const settingKey = editingSetting;
@@ -2432,12 +2488,14 @@ export function MealApp() {
           <RecordsView
             records={records}
             workspace={familyWorkspace}
+            mealCount={currentPlan.meals.length}
             selectedDate={selectedDate}
             todayId={todayId}
             calendarCursor={calendarCursor}
             onSelectDate={setSelectedDate}
             onMoveMonth={moveCalendarMonth}
             onGoToday={goCalendarToday}
+            onAddRecord={addRecordForDate}
             onEditRecord={(record) => { setRecordTargetMealIndex(record.mealIndex); setRecordIngredientIds(record.ingredientIds); setRecordTargetDate(record.date); setRecordOpen(true); }}
           />
         )}
