@@ -161,6 +161,60 @@ export async function loadFamilyWorkspace(): Promise<FamilyWorkspace | null> {
   };
 }
 
+export async function loadCustomIngredients(householdId: string): Promise<IngredientDefinition[]> {
+  const { data, error } = await getSupabaseClient()
+    .from("ingredients")
+    .select("*")
+    .eq("household_id", householdId)
+    .eq("is_custom", true)
+    .order("created_at");
+  if (error) throw error;
+
+  return (data ?? []).map((row) => ({
+    id: row.id,
+    name: row.name,
+    emoji: row.emoji ?? "",
+    assetId: row.asset_id ?? undefined,
+    category: row.category,
+    foodGroup: row.food_group ?? undefined,
+    introductionGroup: row.introduction_group,
+    minimumStage: row.minimum_stage,
+    minimumAgeMonths: row.minimum_age_months ?? 6,
+    introductionPriority: row.introduction_priority,
+    preparationConstraints: row.preparation_constraints ?? [],
+    chokingFormBlacklist: row.choking_form_blacklist ?? [],
+    bookGuidance: row.book_guidance ?? undefined,
+    sourcePages: row.source_pages ?? [],
+    tags: row.tags ?? [],
+  }));
+}
+
+export async function saveCustomIngredient(
+  householdId: string,
+  ingredient: IngredientDefinition,
+): Promise<void> {
+  const { error } = await getSupabaseClient().from("ingredients").insert({
+    id: ingredient.id,
+    household_id: householdId,
+    name: ingredient.name,
+    emoji: ingredient.emoji,
+    asset_id: ingredient.assetId ?? null,
+    category: ingredient.category,
+    introduction_group: ingredient.introductionGroup,
+    minimum_stage: ingredient.minimumStage,
+    minimum_age_months: ingredient.minimumAgeMonths ?? 6,
+    introduction_priority: ingredient.introductionPriority,
+    preparation_constraints: ingredient.preparationConstraints ?? [],
+    choking_form_blacklist: ingredient.chokingFormBlacklist ?? [],
+    book_guidance: ingredient.bookGuidance ?? "가족이 직접 추가한 재료예요. 도입 시기와 반응을 직접 기록해요.",
+    source_pages: ingredient.sourcePages ?? [],
+    tags: ingredient.tags ?? [],
+    is_custom: true,
+    is_active: true,
+  });
+  if (error) throw error;
+}
+
 function fourMonthsAgo(): string {
   const date = new Date();
   date.setMonth(date.getMonth() - 4);
