@@ -18,6 +18,7 @@ import {
   RotateCcw,
   Sprout,
   Trash2,
+  UserMinus,
   X,
 } from "lucide-react";
 import {
@@ -57,6 +58,7 @@ import {
   loadCustomIngredients,
   loadFamilyMealRecords,
   loadRecommendationInputs,
+  removeFamilyMember,
   resetChildProgress,
   loadFamilyWorkspace,
   saveChildIngredientState,
@@ -70,6 +72,7 @@ import {
   signOutFamily,
   type FamilyMealReaction,
   type FamilyMealRecord,
+  type FamilyMember,
   type FamilyWorkspace,
 } from "../lib/family-repository";
 import { getSupabaseClient, isSupabaseConfigured } from "../lib/supabase-client";
@@ -141,11 +144,11 @@ function dataControlMessage(error: unknown, fallback: string): string {
   const message = error instanceof Error
     ? error.message
     : (error as { message?: string } | null)?.message ?? String(error);
-  if (/reset_child_progress|delete_my_account|schema cache|function.*does not exist/i.test(message)) {
+  if (/reset_child_progress|delete_my_account|remove_household_member|schema cache|function.*does not exist/i.test(message)) {
     return "Supabase에서 데이터 관리 SQL을 한 번 실행해야 해요.";
   }
   if (/household owner|가족 관리자/i.test(message)) {
-    return "공유 진행 기록은 가족 관리자 계정에서만 초기화할 수 있어요.";
+    return "공유 데이터 관리는 가족 관리자 계정에서만 할 수 있어요.";
   }
   return fallback;
 }
@@ -1177,10 +1180,60 @@ function DataControlSheet({
   );
 }
 
+function FamilyMemberRemovalSheet({
+  member,
+  onConfirm,
+  onClose,
+}: {
+  member: FamilyMember;
+  onConfirm: () => Promise<void>;
+  onClose: () => void;
+}) {
+  const confirmationWord = "연결해제";
+  const [confirmation, setConfirmation] = useState("");
+  const [working, setWorking] = useState(false);
+
+  const confirm = async () => {
+    if (confirmation.trim() !== confirmationWord) return;
+    dismissMobileKeyboard();
+    setWorking(true);
+    try {
+      await onConfirm();
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  return (
+    <div className="sheet-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="record-sheet compact-sheet data-control-sheet" role="dialog" aria-modal="true" aria-labelledby="member-removal-title" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="sheet-handle" aria-hidden="true" />
+        <div className="sheet-heading">
+          <div><span className="overline">가족 관리자 권한</span><h2 id="member-removal-title">{member.displayName}님의 연결을 해제할까요?</h2></div>
+          <button className="close-button" type="button" onClick={onClose} aria-label="닫기"><X size={19} /></button>
+        </div>
+        <div className="data-control-summary">
+          <p><strong>해제:</strong> 이 가족 공간과 아이 기록을 보고 수정할 권한</p>
+          <p><strong>유지:</strong> 상대방의 로그인 계정과 지금까지 함께 작성한 기록</p>
+          <p>필요하면 나중에 새 초대 코드로 다시 연결할 수 있어요.</p>
+        </div>
+        <label className="danger-confirm-field">
+          <span>계속하려면 <strong>{confirmationWord}</strong>라고 입력하세요.</span>
+          <input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="off" autoCapitalize="none" />
+        </label>
+        <button className="danger-confirm-button" type="button" disabled={confirmation.trim() !== confirmationWord || working} onClick={() => void confirm()}>
+          {working ? "연결 해제 중…" : `${member.displayName}님 가족 연결 해제`}
+        </button>
+      </section>
+    </div>
+  );
+}
+
 function FamilySyncSection({ onWorkspaceChange }: { onWorkspaceChange: () => void }) {
   const configured = isSupabaseConfigured();
   const [email, setEmail] = useState("");
   const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [displayName, setDisplayName] = useState("");
   const [familyName, setFamilyName] = useState("우리 가족");
   const [inviteInput, setInviteInput] = useState("");
@@ -1189,6 +1242,7 @@ function FamilySyncSection({ onWorkspaceChange }: { onWorkspaceChange: () => voi
   const [loading, setLoading] = useState(configured);
   const [message, setMessage] = useState<string | null>(null);
   const [needsDatabase, setNeedsDatabase] = useState(false);
+  const [memberToRemove, setMemberToRemove] = useState<FamilyMember | null>(null);
 
   const refreshWorkspace = useCallback(async () => {
     try {
@@ -1211,6 +1265,7 @@ function FamilySyncSection({ onWorkspaceChange }: { onWorkspaceChange: () => voi
       if (!active) return;
       const nextUserLabel = data.session?.user ? data.session.user.email ?? "이 기기 보호자" : null;
       setUserEmail(nextUserLabel);
+      setCurrentUserId(data.session?.user.id ?? null);
       if (nextUserLabel) void refreshWorkspace();
       setLoading(false);
     });
@@ -1218,6 +1273,7 @@ function FamilySyncSection({ onWorkspaceChange }: { onWorkspaceChange: () => voi
       if (!active) return;
       const nextUserLabel = session?.user ? session.user.email ?? "이 기기 보호자" : null;
       setUserEmail(nextUserLabel);
+      setCurrentUserId(session?.user.id ?? null);
       setLoading(false);
       if (nextUserLabel) window.setTimeout(() => void refreshWorkspace(), 0);
       else {
@@ -1312,7 +1368,28 @@ function FamilySyncSection({ onWorkspaceChange }: { onWorkspaceChange: () => voi
     setMessage("초대 코드를 복사했어요.");
   };
 
+  const confirmMemberRemoval = async () => {
+    if (!workspace || !memberToRemove) return;
+    setLoading(true);
+    setMessage(null);
+    try {
+      const removedName = memberToRemove.displayName;
+      await removeFamilyMember(workspace.householdId, memberToRemove.userId);
+      setMemberToRemove(null);
+      await refreshWorkspace();
+      setMessage(`${removedName}님의 가족 연결을 해제했어요.`);
+    } catch (error) {
+      setMessage(dataControlMessage(error, "가족 연결을 해제하지 못했어요."));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const currentMember = workspace?.members.find((member) => member.userId === currentUserId);
+  const canManageMembers = currentMember?.role === "owner";
+
   return (
+    <>
     <section className="section-card family-sync-card">
       <div className="section-heading">
         <div>
@@ -1361,9 +1438,14 @@ function FamilySyncSection({ onWorkspaceChange }: { onWorkspaceChange: () => voi
           <p className="signed-email"><Check size={14} aria-hidden="true" /> {workspace.householdName} · {userEmail}</p>
           <div className="family-list">
             {workspace.members.map((member, index) => (
-              <div key={member.userId}>
+              <div className="family-member-row" key={member.userId}>
                 <span className={`family-avatar ${index % 2 ? "apricot" : "sage"}`}>{member.displayName.slice(0, 1)}</span>
-                <p><strong>{member.displayName}</strong><br /><small>{member.role === "owner" ? "가족 관리자" : "보호자"}</small></p>
+                <p><strong>{member.displayName}</strong><br /><small>{member.role === "owner" ? "가족 관리자" : "보호자"}{member.userId === currentUserId ? " · 현재 계정" : ""}</small></p>
+                {canManageMembers && member.userId !== currentUserId && (
+                  <button className="member-remove-action" type="button" disabled={loading} onClick={() => setMemberToRemove(member)}>
+                    <UserMinus size={14} aria-hidden="true" /> 연결 해제
+                  </button>
+                )}
               </div>
             ))}
           </div>
@@ -1378,6 +1460,14 @@ function FamilySyncSection({ onWorkspaceChange }: { onWorkspaceChange: () => voi
 
       {message && <p className="sync-message" role="status">{message}</p>}
     </section>
+    {memberToRemove && (
+      <FamilyMemberRemovalSheet
+        member={memberToRemove}
+        onConfirm={confirmMemberRemoval}
+        onClose={() => setMemberToRemove(null)}
+      />
+    )}
+    </>
   );
 }
 

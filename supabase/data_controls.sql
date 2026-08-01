@@ -1,5 +1,5 @@
 -- Run once in Supabase SQL Editor after schema.sql and book_engine_v2.sql.
--- Adds owner-only progress reset and authenticated account deletion.
+-- Adds owner-only progress reset, family member removal, and authenticated account deletion.
 
 create or replace function public.reset_child_progress(target_child_id uuid)
 returns void
@@ -100,7 +100,56 @@ begin
 end;
 $$;
 
+create or replace function public.remove_household_member(
+  target_household_id uuid,
+  target_user_id uuid
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  calling_user_id uuid := auth.uid();
+begin
+  if calling_user_id is null then
+    raise exception 'Authentication required';
+  end if;
+
+  if target_user_id is null or target_user_id = calling_user_id then
+    raise exception 'The household owner cannot remove this account';
+  end if;
+
+  if not exists (
+    select 1
+    from public.households h
+    where h.id = target_household_id
+      and h.owner_id = calling_user_id
+  ) then
+    raise exception 'Only the household owner can remove a family member';
+  end if;
+
+  if not exists (
+    select 1
+    from public.household_members hm
+    where hm.household_id = target_household_id
+      and hm.user_id = target_user_id
+      and hm.role <> 'owner'
+  ) then
+    raise exception 'Family member not found';
+  end if;
+
+  -- Keep the person's login and historical authorship intact, but revoke all
+  -- access to this household immediately through the membership-based RLS rules.
+  delete from public.household_members
+  where household_id = target_household_id
+    and user_id = target_user_id;
+end;
+$$;
+
 revoke all on function public.reset_child_progress(uuid) from public;
 revoke all on function public.delete_my_account() from public;
+revoke all on function public.remove_household_member(uuid, uuid) from public;
 grant execute on function public.reset_child_progress(uuid) to authenticated;
 grant execute on function public.delete_my_account() to authenticated;
+grant execute on function public.remove_household_member(uuid, uuid) to authenticated;

@@ -115,6 +115,14 @@ export async function deleteMyAccount(): Promise<void> {
   await client.auth.signOut({ scope: "local" }).catch(() => undefined);
 }
 
+export async function removeFamilyMember(householdId: string, userId: string): Promise<void> {
+  const { error } = await getSupabaseClient().rpc("remove_household_member", {
+    target_household_id: householdId,
+    target_user_id: userId,
+  });
+  if (error) throw error;
+}
+
 export async function createFamilyWorkspace(
   householdName: string,
   displayName: string,
