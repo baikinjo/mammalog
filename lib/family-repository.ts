@@ -42,6 +42,7 @@ export interface FamilyMealRecord {
 export interface SaveFamilyMealInput {
   childId: string;
   date: string;
+  mealIndex: number;
   plannedTime: string;
   title: string;
   ingredients: IngredientDefinition[];
@@ -345,7 +346,7 @@ export async function saveFamilyMealRecord(input: SaveFamilyMealInput): Promise<
     .upsert({
       child_id: input.childId,
       meal_date: input.date,
-      meal_index: 1,
+      meal_index: input.mealIndex,
       planned_time: input.plannedTime,
       title: input.title,
       serving_guide: input.servingGuide,

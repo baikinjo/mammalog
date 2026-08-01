@@ -576,6 +576,17 @@ button {
 .development-note > svg { flex: 0 0 auto; margin-top: 2px; }
 .development-note p { margin: 0; color: var(--ink-soft); font-size: 11px; line-height: 1.65; }
 .development-note strong { color: var(--sage-deep); }
+.daily-schedule-list { display: grid; margin-top: 18px; border-block: 1px solid var(--line); }
+.daily-schedule-list > button,
+.schedule-snack { display: grid; min-height: 72px; grid-template-columns: 78px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 12px 2px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--ink); text-align: left; }
+.daily-schedule-list > :last-child { border-bottom: 0; }
+.daily-schedule-list > button { cursor: pointer; }
+.daily-schedule-list > button > span:nth-child(2),
+.schedule-snack > span:nth-child(2) { display: grid; gap: 5px; }
+.daily-schedule-list strong { font-size: 13px; }
+.daily-schedule-list small { color: var(--ink-soft); font-size: 10px; line-height: 1.5; }
+.schedule-time { color: var(--sage-deep); font-size: 11px; font-weight: 700; }
+.schedule-kind { padding: 6px 8px; border-radius: 999px; background: var(--canvas); color: var(--ink-soft); font-size: 9px; font-weight: 700; }
 .safety-reasons { margin-bottom: 0; }
 
 .primary-action,
@@ -690,6 +701,9 @@ button {
 .empty-state p { width: 100%; max-width: 36rem; margin: 0; font-size: 12px; line-height: 1.75; text-wrap: pretty; }
 
 .saved-record { display: grid; grid-template-columns: 64px 1fr auto; width: 100%; gap: 16px; align-items: center; margin-top: 20px; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.saved-record-list { display: grid; margin-top: 18px; }
+.saved-record-list .saved-record { margin-top: 0; padding: 14px 0; border-bottom: 1px solid var(--line); }
+.saved-record-list .saved-record:last-child { border-bottom: 0; }
 .saved-date { display: grid; width: 62px; height: 70px; place-items: center; align-content: center; border-radius: 20px; background: var(--sage-soft); color: var(--sage-deep); }
 .saved-date strong { font-family: Georgia, serif; font-size: 27px; }
 .saved-date span { font-size: 10px; }
@@ -859,6 +873,26 @@ button {
 .profile-form p { margin: -2px 0 0; color: var(--ink-soft); font-size: 11px; line-height: 1.65; }
 .profile-form .primary-action:disabled { cursor: not-allowed; opacity: 0.45; }
 
+.feeding-plan-form { display: grid; gap: 22px; margin-top: 24px; }
+.stage-picker,
+.condition-picker { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 7px; }
+.stage-picker button,
+.condition-picker button { min-height: 42px; min-width: 0; padding: 7px 5px; border: 1px solid var(--line); border-radius: 13px; background: var(--paper); color: var(--ink-soft); font-size: 10px; cursor: pointer; }
+.stage-picker button.is-selected,
+.condition-picker button.is-selected { border-color: rgba(80, 102, 78, 0.48); background: var(--sage-soft); color: var(--sage-deep); font-weight: 700; }
+.feeding-number-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.feeding-number-grid select,
+.feeding-number-grid input { width: 100%; min-width: 0; min-height: 50px; padding: 0 12px; border: 1px solid var(--line); border-radius: 14px; outline: 0; background: var(--canvas); color: var(--ink); font-size: 16px; }
+.feeding-number-grid select:focus,
+.feeding-number-grid input:focus { border-color: var(--sage); box-shadow: 0 0 0 3px rgba(110, 132, 107, 0.13); }
+.texture-control { display: grid; gap: 11px; }
+.texture-control > span { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 12px; }
+.texture-control b { color: var(--sage-deep); font-size: 15px; }
+.texture-control input { width: 100%; accent-color: var(--sage-deep); }
+.texture-control small { color: var(--ink-soft); font-size: 10px; line-height: 1.6; }
+.compact-readiness label { min-height: 44px; }
+.feeding-plan-form .primary-action:disabled { cursor: wait; opacity: 0.65; }
+
 .time-form { display: grid; gap: 17px; margin-top: 26px; }
 .time-form > label { font-size: 12px; font-weight: 700; }
 .time-input-wrap { display: flex; min-height: 74px; align-items: center; padding: 0 18px; border: 1px solid rgba(80, 102, 78, 0.4); border-radius: 20px; background: var(--sage-soft); color: var(--sage-deep); }
@@ -968,6 +1002,9 @@ textarea:focus-visible {
   .profile-hero { align-items: flex-start; flex-wrap: wrap; }
   .profile-edit-action { margin-left: 96px; margin-top: -26px; }
   .profile-date-grid { grid-template-columns: 1fr; }
+  .feeding-number-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .condition-picker { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .stage-picker { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .sheet-backdrop { padding: 8px 0 0; }
   .record-sheet { padding-inline: 20px; }
 }

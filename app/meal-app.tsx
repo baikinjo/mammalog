@@ -33,12 +33,15 @@ import type {
   BabyProfile,
   ChildIngredientState,
   DailyRecommendation,
+  DevelopmentSkills,
   IngredientCategory,
   IngredientDefinition,
   IntroductionGroup,
   MealHistoryEntry,
   MealSuggestion,
   ReadinessSignals,
+  TemporaryCondition,
+  WeaningStage,
 } from "../lib/domain";
 import {
   createFamilyInvite,
@@ -261,6 +264,30 @@ const readinessLabels: Record<keyof ReadinessSignals, string> = {
   foodInterest: "가족이 먹는 음식에 관심을 보여요",
 };
 
+const feedingStageLabels: Record<WeaningStage, string> = {
+  prestart: "시작 전",
+  initial: "초기",
+  middle: "중기",
+  late: "후기",
+  completion: "완료기",
+};
+
+const temporaryConditionLabels: Record<TemporaryCondition, string> = {
+  none: "특이사항 없음",
+  cold: "감기·코막힘",
+  diarrhea: "설사",
+  constipation: "변비",
+  mouthPain: "입안 통증·이앓이",
+};
+
+const developmentSkillLabels: Record<keyof DevelopmentSkills, string> = {
+  handlesCurrentTexture: "현재 질감을 편하게 먹어요",
+  reachesAndGrasps: "음식을 향해 손을 뻗고 잡아요",
+  fingerFood: "핑거푸드를 집어 먹어요",
+  spoonPractice: "숟가락을 쥐는 연습을 해요",
+  cupPractice: "컵으로 마시는 연습을 해요",
+};
+
 function IngredientVisual({ ingredient, className = "" }: { ingredient: IngredientDefinition; className?: string }) {
   const src = ingredientAssetPaths[ingredient.assetId ?? ingredient.id];
 
@@ -377,7 +404,7 @@ function TodayMeal({
   ingredientStates: ChildIngredientState[];
   mealHistory: MealHistoryEntry[];
   onBack: () => void;
-  onRecord: (ingredientIds: string[]) => void;
+  onRecord: (mealIndex: number, ingredientIds: string[]) => void;
 }) {
   const planProfile = useMemo(() => recommendationProfile(profile), [profile]);
   const bookPlan = useMemo(
@@ -480,10 +507,35 @@ function TodayMeal({
           </ul>
         </details>
 
-        <button className="primary-action" type="button" onClick={() => onRecord(visibleIngredients.map((ingredient) => ingredient.id))}>
+        <button className="primary-action" type="button" onClick={() => onRecord(1, visibleIngredients.map((ingredient) => ingredient.id))}>
           식사 기록하기
         </button>
       </section>
+
+      {(bookPlan.meals.length > 1 || bookPlan.snacks.length > 0) && (
+        <section className="section-card daily-schedule-card">
+          <div className="section-heading">
+            <div><span className="overline">하루 전체</span><h2>오늘의 식사 일정</h2></div>
+            <span className="count-badge">{bookPlan.meals.length}끼{bookPlan.snacks.length ? ` + 간식 ${bookPlan.snacks.length}` : ""}</span>
+          </div>
+          <div className="daily-schedule-list">
+            {bookPlan.meals.slice(1).map((meal) => (
+              <button type="button" key={`meal-${meal.index}`} onClick={() => onRecord(meal.index, meal.items.map((item) => item.ingredient.id))}>
+                <span className="schedule-time">{formatKoreanTime(meal.time)}</span>
+                <span><strong>{meal.index}번째 이유식 · {meal.title}</strong><small>{meal.items.map((item) => item.ingredient.name).join(" · ")}</small></span>
+                <ChevronRight size={17} aria-hidden="true" />
+              </button>
+            ))}
+            {bookPlan.snacks.map((snack) => (
+              <div className="schedule-snack" key={`snack-${snack.index}`}>
+                <span className="schedule-time">{formatKoreanTime(snack.time)}</span>
+                <span><strong>간식 · {snack.title}</strong><small>{snack.servingGuide}</small></span>
+                <span className="schedule-kind">간식</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       <section className="section-card rule-check-card">
         <div className="section-heading">
@@ -626,12 +678,11 @@ function RecordsView({
 }) {
   const monthDays = useMemo(() => createMonthDays(calendarCursor), [calendarCursor]);
   const firstDayOffset = new Date(calendarCursor.year, calendarCursor.month, 1).getDay();
-  const selectedRecord = records.find((record) => record.date === selectedDate) ?? null;
+  const selectedRecords = records
+    .filter((record) => record.date === selectedDate)
+    .sort((left, right) => left.mealIndex - right.mealIndex);
   const recordDates = useMemo(() => new Set(records.map((record) => record.date)), [records]);
   const selectedLabel = formatKoreanDate(selectedDate);
-  const recordAuthor = selectedRecord
-    ? workspace?.members.find((member) => member.userId === selectedRecord.recordedBy)?.displayName ?? "가족"
-    : null;
 
   return (
     <>
@@ -689,19 +740,26 @@ function RecordsView({
         <div className="section-heading">
           <div>
             <span className="overline">{selectedLabel}</span>
-            <h2>{selectedRecord ? "식사를 기록했어요" : "이날의 기록이 없어요"}</h2>
+            <h2>{selectedRecords.length ? `${selectedRecords.length}번의 식사를 기록했어요` : "이날의 기록이 없어요"}</h2>
           </div>
         </div>
-        {selectedRecord ? (
-          <button className="saved-record" type="button" onClick={() => onEditRecord(selectedRecord)}>
-            <div className="saved-date"><strong>{String(selectedRecord.mealIndex).padStart(2, "0")}</strong><span>{formatKoreanTime(selectedRecord.plannedTime)}</span></div>
-            <div>
-              <strong>{selectedRecord.title}</strong>
-              <p>{completionLabels[selectedRecord.completion]} · {reactionLabels[selectedRecord.reaction]}</p>
-              <span className="record-author">{recordAuthor} 기록 · 가족과 동기화됨</span>
-            </div>
-            <ChevronRight size={18} aria-hidden="true" />
-          </button>
+        {selectedRecords.length ? (
+          <div className="saved-record-list">
+            {selectedRecords.map((record) => {
+              const recordAuthor = workspace?.members.find((member) => member.userId === record.recordedBy)?.displayName ?? "가족";
+              return (
+                <button className="saved-record" type="button" key={record.id} onClick={() => onEditRecord(record)}>
+                  <div className="saved-date"><strong>{String(record.mealIndex).padStart(2, "0")}</strong><span>{formatKoreanTime(record.plannedTime)}</span></div>
+                  <div>
+                    <strong>{record.title}</strong>
+                    <p>{completionLabels[record.completion]} · {reactionLabels[record.reaction]}</p>
+                    <span className="record-author">{recordAuthor} 기록 · 가족과 동기화됨</span>
+                  </div>
+                  <ChevronRight size={18} aria-hidden="true" />
+                </button>
+              );
+            })}
+          </div>
         ) : (
           <div className="empty-state">
             <span aria-hidden="true">◌</span>
@@ -718,6 +776,7 @@ function ProfileView({
   settings,
   onEditSetting,
   onEditProfile,
+  onEditFeedingPlan,
   onExport,
   onWorkspaceChange,
 }: {
@@ -725,6 +784,7 @@ function ProfileView({
   settings: Record<SettingKey, string>;
   onEditSetting: (key: SettingKey) => void;
   onEditProfile: () => void;
+  onEditFeedingPlan: () => void;
   onExport: () => void;
   onWorkspaceChange: () => void;
 }) {
@@ -743,6 +803,10 @@ function ProfileView({
 
       <section className="section-card profile-settings">
         <div className="setting-row">
+          <div><span>현재 단계</span><strong>{feedingStageLabels[profile.stage]} · 하루 {profile.mealsPerDay}끼{profile.snacksPerDay ? ` · 간식 ${profile.snacksPerDay}회` : ""}</strong></div>
+          <button type="button" aria-label="단계와 끼니 설정 수정" onClick={onEditFeedingPlan}><ChevronRight size={19} /></button>
+        </div>
+        <div className="setting-row">
           <div><span>예상 시작</span><strong>{settings.start}</strong></div>
           <button type="button" aria-label="예상 시작일 수정" onClick={onEditProfile}><ChevronRight size={19} /></button>
         </div>
@@ -753,6 +817,10 @@ function ProfileView({
         <div className="setting-row">
           <div><span>조리 방식</span><strong>{settings.style}</strong></div>
           <button type="button" aria-label="조리 방식 수정" onClick={() => onEditSetting("style")}><ChevronRight size={19} /></button>
+        </div>
+        <div className="setting-row">
+          <div><span>현재 질감</span><strong>{profile.textureMm || 1}mm 안팎 · {temporaryConditionLabels[profile.temporaryCondition ?? "none"]}</strong></div>
+          <button type="button" aria-label="질감과 상태 설정 수정" onClick={onEditFeedingPlan}><ChevronRight size={19} /></button>
         </div>
       </section>
 
@@ -1195,6 +1263,124 @@ function BabyProfileSheet({
   );
 }
 
+function FeedingPlanSheet({
+  profile,
+  onSave,
+  onClose,
+}: {
+  profile: BabyProfile;
+  onSave: (profile: BabyProfile) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [stage, setStage] = useState<WeaningStage>(profile.stage);
+  const [mealsPerDay, setMealsPerDay] = useState(profile.mealsPerDay);
+  const [snacksPerDay, setSnacksPerDay] = useState(profile.snacksPerDay ?? 0);
+  const [milkMlPerDay, setMilkMlPerDay] = useState(profile.milkMlPerDay?.toString() ?? "");
+  const [textureMm, setTextureMm] = useState(Math.max(1, profile.textureMm || 1));
+  const [temporaryCondition, setTemporaryCondition] = useState<TemporaryCondition>(profile.temporaryCondition ?? "none");
+  const [skills, setSkills] = useState<DevelopmentSkills>(profile.skills ?? {
+    handlesCurrentTexture: false,
+    reachesAndGrasps: false,
+    fingerFood: false,
+    spoonPractice: false,
+    cupPractice: false,
+  });
+  const [saving, setSaving] = useState(false);
+  const guide = stage === "prestart" ? getStageGuide("initial") : getStageGuide(stage);
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    dismissMobileKeyboard();
+    setSaving(true);
+    try {
+      await onSave({
+        ...profile,
+        stage,
+        mealsPerDay,
+        snacksPerDay,
+        milkMlPerDay: milkMlPerDay ? Number(milkMlPerDay) : null,
+        textureMm,
+        temporaryCondition,
+        skills,
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="sheet-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="record-sheet compact-sheet" role="dialog" aria-modal="true" aria-labelledby="feeding-plan-title" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="sheet-handle" aria-hidden="true" />
+        <div className="sheet-heading">
+          <div><span className="overline">책 기반 운영 설정</span><h2 id="feeding-plan-title">단계·끼니·질감</h2></div>
+          <button className="close-button" type="button" onClick={onClose} aria-label="닫기"><X size={19} /></button>
+        </div>
+        <form className="feeding-plan-form" onSubmit={(event) => void submit(event)}>
+          <fieldset className="form-field">
+            <legend>현재 단계</legend>
+            <div className="stage-picker">
+              {(Object.keys(feedingStageLabels) as WeaningStage[]).map((value) => (
+                <button className={stage === value ? "is-selected" : ""} type="button" key={value} onClick={() => setStage(value)} aria-pressed={stage === value}>
+                  {feedingStageLabels[value]}
+                </button>
+              ))}
+            </div>
+          </fieldset>
+          <div className="feeding-number-grid">
+            <label className="form-field">
+              <span>하루 이유식</span>
+              <select value={mealsPerDay} onChange={(event) => setMealsPerDay(Number(event.target.value))}>
+                {[1, 2, 3].map((value) => <option value={value} key={value}>{value}끼</option>)}
+              </select>
+            </label>
+            <label className="form-field">
+              <span>하루 간식</span>
+              <select value={snacksPerDay} onChange={(event) => setSnacksPerDay(Number(event.target.value))}>
+                {[0, 1, 2, 3].map((value) => <option value={value} key={value}>{value}회</option>)}
+              </select>
+            </label>
+            <label className="form-field">
+              <span>하루 수유량</span>
+              <input type="number" min="0" max="2000" inputMode="numeric" value={milkMlPerDay} onChange={(event) => setMilkMlPerDay(event.target.value)} placeholder={`${guide.milkMlRange[0]}–${guide.milkMlRange[1]}ml`} />
+            </label>
+          </div>
+          <label className="texture-control">
+            <span><strong>현재 질감</strong><b>{textureMm}mm 안팎</b></span>
+            <input type="range" min="1" max="15" step="1" value={textureMm} onChange={(event) => setTextureMm(Number(event.target.value))} />
+            <small>{feedingStageLabels[stage]} 책 범위: {guide.textureMmRange[0]}–{guide.textureMmRange[1]}mm · {guide.textureDescription}</small>
+          </label>
+          <fieldset className="form-field">
+            <legend>오늘의 일시 상태</legend>
+            <div className="condition-picker">
+              {(Object.keys(temporaryConditionLabels) as TemporaryCondition[]).map((value) => (
+                <button className={temporaryCondition === value ? "is-selected" : ""} type="button" key={value} onClick={() => setTemporaryCondition(value)} aria-pressed={temporaryCondition === value}>
+                  {temporaryConditionLabels[value]}
+                </button>
+              ))}
+            </div>
+          </fieldset>
+          <fieldset className="form-field">
+            <legend>현재 먹기 기술</legend>
+            <div className="readiness-picker compact-readiness">
+              {(Object.keys(developmentSkillLabels) as (keyof DevelopmentSkills)[]).map((key) => (
+                <label className={skills[key] ? "is-checked" : ""} key={key}>
+                  <input type="checkbox" checked={skills[key]} onChange={(event) => setSkills((current) => ({ ...current, [key]: event.target.checked }))} />
+                  <span>{developmentSkillLabels[key]}</span>
+                  {skills[key] && <Check size={17} aria-hidden="true" />}
+                </label>
+              ))}
+            </div>
+          </fieldset>
+          <button className="primary-action" type="submit" disabled={saving}>
+            {saving ? "가족 공간에 저장 중…" : "운영 설정 저장"}
+          </button>
+        </form>
+      </section>
+    </div>
+  );
+}
+
 function SettingSheet({
   settingKey,
   value,
@@ -1270,11 +1456,15 @@ function TimeSettingSheet({
 
 function RecordSheet({
   targetDate,
+  mealIndex,
+  plannedTime,
   initialRecord,
   onClose,
   onSave,
 }: {
   targetDate: string;
+  mealIndex: number;
+  plannedTime: string;
   initialRecord: FamilyMealRecord | null;
   onClose: () => void;
   onSave: (draft: RecordDraft) => Promise<void>;
@@ -1309,8 +1499,8 @@ function RecordSheet({
         <div className="sheet-handle" aria-hidden="true" />
         <div className="sheet-heading">
           <div>
-            <span className="overline">{formatKoreanDate(targetDate)} · 오전 10:00</span>
-            <h2 id="record-title">{initialRecord ? "식사 기록을 수정할까요?" : "첫 식사는 어땠나요?"}</h2>
+            <span className="overline">{formatKoreanDate(targetDate)} · {formatKoreanTime(plannedTime)}</span>
+            <h2 id="record-title">{initialRecord ? `${mealIndex}번째 식사 기록을 수정할까요?` : `${mealIndex}번째 식사는 어땠나요?`}</h2>
           </div>
           <button className="close-button" type="button" onClick={onClose} aria-label="닫기"><X size={19} /></button>
         </div>
@@ -1372,6 +1562,7 @@ export function MealApp() {
   const [previewStarted, setPreviewStarted] = useState(false);
   const [recordOpen, setRecordOpen] = useState(false);
   const [recordIngredientIds, setRecordIngredientIds] = useState<string[] | null>(null);
+  const [recordTargetMealIndex, setRecordTargetMealIndex] = useState(1);
   const [todayId] = useState(() => toDateId(new Date()));
   const [recordTargetDate, setRecordTargetDate] = useState(() => toDateId(new Date()));
   const [records, setRecords] = useState<FamilyMealRecord[]>([]);
@@ -1387,6 +1578,7 @@ export function MealApp() {
   const [customIngredients, setCustomIngredients] = useState<IngredientDefinition[]>([]);
   const [addIngredientOpen, setAddIngredientOpen] = useState(false);
   const [profileEditorOpen, setProfileEditorOpen] = useState(false);
+  const [feedingPlanOpen, setFeedingPlanOpen] = useState(false);
   const [editingSetting, setEditingSetting] = useState<SettingKey | null>(null);
   const [settings, setSettings] = useState<Record<SettingKey, string>>({
     start: "만 6개월",
@@ -1406,7 +1598,10 @@ export function MealApp() {
     ),
     [displayProfile, ingredientStates, mealHistory],
   );
-  const editingRecord = records.find((record) => record.date === recordTargetDate) ?? null;
+  const editingRecord = records.find((record) => record.date === recordTargetDate && record.mealIndex === recordTargetMealIndex) ?? null;
+  const recordPlannedTime = editingRecord?.plannedTime
+    ?? currentPlan.meals.find((meal) => meal.index === recordTargetMealIndex)?.time
+    ?? displayProfile.preferredMealTime;
 
   const showToast = useCallback((message: string) => {
     setToast(message);
@@ -1525,7 +1720,7 @@ export function MealApp() {
       mealHistory,
       parseDateId(recordTargetDate),
     );
-    const meal = plan.meals[0];
+    const meal = plan.meals.find((item) => item.index === recordTargetMealIndex);
     if (!meal) {
       showToast("오늘 기록할 추천 식사를 만들지 못했어요.");
       return;
@@ -1538,10 +1733,13 @@ export function MealApp() {
       await saveFamilyMealRecord({
         childId: currentChild.id,
         date: recordTargetDate,
+        mealIndex: recordTargetMealIndex,
         plannedTime: meal.time,
         title: meal.title,
         ingredients: recordedIngredients,
-        newExposureIngredientId: plan.currentTrial?.id ?? null,
+        newExposureIngredientId: plan.currentTrial && meal.items.some((item) => item.ingredient.id === plan.currentTrial?.id)
+          ? plan.currentTrial.id
+          : null,
         completion: draft.amount,
         reaction: draft.reaction,
         note: draft.note,
@@ -1551,7 +1749,8 @@ export function MealApp() {
         textureGuide: meal.textureGuide,
         recommendationReasons: meal.reasons,
       });
-      if (!editingRecord && plan.currentTrial) {
+      const includesCurrentTrial = plan.currentTrial && recordedIngredients.some((ingredient) => ingredient.id === plan.currentTrial?.id);
+      if (!editingRecord && plan.currentTrial && includesCurrentTrial) {
         const outcome = draft.reaction === "needs_review"
           ? "suspectedReaction"
           : draft.reaction === "taste_rejection"
@@ -1645,6 +1844,7 @@ export function MealApp() {
   const saveProfile = async (profile: BabyProfile) => {
     if (!familyWorkspace) {
       setProfileEditorOpen(false);
+      setFeedingPlanOpen(false);
       setActiveTab("profile");
       showToast("먼저 가족 공간을 연결해주세요.");
       return;
@@ -1660,6 +1860,7 @@ export function MealApp() {
       await saveChildProfile(familyWorkspace.householdId, nextProfile);
       await refreshFamilyData();
       setProfileEditorOpen(false);
+      setFeedingPlanOpen(false);
       showToast("아이 정보를 가족 공간에 저장했어요.");
     } catch {
       showToast("아이 정보를 저장하지 못했어요. 잠시 후 다시 시도해주세요.");
@@ -1719,7 +1920,7 @@ export function MealApp() {
               ingredientStates={ingredientStates}
               mealHistory={mealHistory}
               onBack={() => setPreviewStarted(false)}
-              onRecord={(ingredientIds) => { setRecordIngredientIds(ingredientIds); setRecordTargetDate(todayId); setRecordOpen(true); }}
+              onRecord={(mealIndex, ingredientIds) => { setRecordTargetMealIndex(mealIndex); setRecordIngredientIds(ingredientIds); setRecordTargetDate(todayId); setRecordOpen(true); }}
             />
           ) : (
             <TodayPrepare profile={displayProfile} onPreview={() => setPreviewStarted(true)} />
@@ -1738,7 +1939,7 @@ export function MealApp() {
             onSelectDate={setSelectedDate}
             onMoveMonth={moveCalendarMonth}
             onGoToday={goCalendarToday}
-            onEditRecord={(record) => { setRecordIngredientIds(record.ingredientIds); setRecordTargetDate(record.date); setRecordOpen(true); }}
+            onEditRecord={(record) => { setRecordTargetMealIndex(record.mealIndex); setRecordIngredientIds(record.ingredientIds); setRecordTargetDate(record.date); setRecordOpen(true); }}
           />
         )}
         {activeTab === "profile" && (
@@ -1747,6 +1948,7 @@ export function MealApp() {
             settings={settings}
             onEditSetting={setEditingSetting}
             onEditProfile={() => setProfileEditorOpen(true)}
+            onEditFeedingPlan={() => setFeedingPlanOpen(true)}
             onExport={exportData}
             onWorkspaceChange={refreshFamilyData}
           />
@@ -1769,7 +1971,7 @@ export function MealApp() {
       </nav>
 
       {recordOpen && (
-        <RecordSheet targetDate={recordTargetDate} initialRecord={editingRecord} onClose={() => { setRecordOpen(false); setRecordIngredientIds(null); }} onSave={saveRecord} />
+        <RecordSheet mealIndex={recordTargetMealIndex} plannedTime={recordPlannedTime} targetDate={recordTargetDate} initialRecord={editingRecord} onClose={() => { setRecordOpen(false); setRecordIngredientIds(null); }} onSave={saveRecord} />
       )}
 
       {selectedIngredient && <IngredientSheet ingredient={selectedIngredient} onClose={() => setSelectedIngredient(null)} />}
@@ -1778,6 +1980,10 @@ export function MealApp() {
 
       {profileEditorOpen && (
         <BabyProfileSheet profile={displayProfile} onSave={saveProfile} onClose={() => setProfileEditorOpen(false)} />
+      )}
+
+      {feedingPlanOpen && (
+        <FeedingPlanSheet profile={displayProfile} onSave={saveProfile} onClose={() => setFeedingPlanOpen(false)} />
       )}
 
       {editingSetting === "time" && (
