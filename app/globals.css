@@ -837,6 +837,12 @@ button {
 .sync-form input:focus,
 .sync-setup input:focus { border-color: var(--sage); box-shadow: 0 0 0 3px rgba(110, 132, 107, 0.13); }
 .sync-form .primary-action { min-height: 49px; }
+.email-login-panel > .sync-divider { margin-top: 16px; }
+.password-setup-form { padding: 16px; border: 1px solid rgba(80, 102, 78, 0.24); border-radius: 20px; background: rgba(223, 232, 217, 0.26); }
+.password-setup-form > div { display: grid; gap: 5px; }
+.password-setup-form strong { font-size: 12px; }
+.password-setup-form p { margin: 0; color: var(--ink-soft); font-size: 10px; line-height: 1.6; }
+.password-setup-form small { color: var(--ink-soft); font-size: 9px; line-height: 1.55; }
 .email-login-panel .email-code-form { padding-top: 14px; border-top: 1px solid var(--line); }
 .email-code-form code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .email-code-address { margin: 0; color: var(--ink-soft); font-size: 10px; }

@@ -193,6 +193,53 @@ export async function verifyFamilyEmailCode(email: string, token: string): Promi
   if (error) throw error;
 }
 
+export async function signInFamilyWithPassword(email: string, password: string): Promise<void> {
+  const { error } = await getSupabaseClient().auth.signInWithPassword({
+    email: email.trim(),
+    password,
+  });
+  if (error) throw error;
+}
+
+export async function setFamilyPassword(password: string): Promise<void> {
+  const client = getSupabaseClient();
+  const { data, error } = await client.auth.getUser();
+  if (error) throw error;
+  if (!data.user?.email || data.user.is_anonymous) {
+    throw new Error("이메일 계정으로 로그인해야 비밀번호를 설정할 수 있어요.");
+  }
+
+  const { error: updateError } = await client.auth.updateUser({ password });
+  if (updateError) throw updateError;
+}
+
+export async function linkFamilyAccountEmail(email: string, redirectTo: string): Promise<void> {
+  const client = getSupabaseClient();
+  const { data, error } = await client.auth.getUser();
+  if (error) throw error;
+  if (!data.user?.is_anonymous) {
+    throw new Error("기기 계정에 이메일을 연결하려면 먼저 이 기기의 가족 계정으로 로그인해야 해요.");
+  }
+
+  const { error: updateError } = await client.auth.updateUser(
+    { email: email.trim() },
+    { emailRedirectTo: redirectTo },
+  );
+  if (updateError) throw updateError;
+}
+
+export async function refreshFamilySession(): Promise<{
+  email: string | null;
+  isAnonymous: boolean;
+}> {
+  const { data, error } = await getSupabaseClient().auth.refreshSession();
+  if (error) throw error;
+  return {
+    email: data.user?.email ?? null,
+    isAnonymous: data.user?.is_anonymous ?? true,
+  };
+}
+
 export async function signInFamilyAnonymously(): Promise<void> {
   const { error } = await getSupabaseClient().auth.signInAnonymously();
   if (error) throw error;

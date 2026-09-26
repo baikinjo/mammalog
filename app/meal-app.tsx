@@ -75,6 +75,10 @@ import {
   updateCustomIngredient,
   sendFamilyLoginEmail,
   verifyFamilyEmailCode,
+  signInFamilyWithPassword,
+  setFamilyPassword,
+  linkFamilyAccountEmail,
+  refreshFamilySession,
   signInFamilyAnonymously,
   signOutFamily,
   type FamilyMealReaction,
@@ -141,10 +145,16 @@ function familyAuthMessage(error: unknown, fallback: string): string {
     return "무료 메일 발송 한도를 넘었어요. 잠시 기다리거나 ‘이 기기 바로 연결’을 이용해주세요.";
   }
   if (code === "email_address_not_authorized") {
-    return "Supabase 기본 메일은 등록된 관리자 주소에만 보낼 수 있어요. ‘이 기기 바로 연결’을 이용해주세요.";
+    return "Supabase 기본 메일은 프로젝트 팀에 등록된 주소에만 보낼 수 있어요. 팀 주소를 사용하거나 custom SMTP를 설정해주세요.";
   }
   if (code === "anonymous_provider_disabled") {
     return "Supabase에서 익명 로그인을 한 번 켜야 해요. Authentication → Providers → Anonymous에서 활성화해주세요.";
+  }
+  if (code === "manual_linking_disabled") {
+    return "Supabase에서 수동 계정 연결을 켜야 기존 가족 계정을 이메일에 연결할 수 있어요. Authentication → Providers에서 Manual Linking을 활성화해주세요.";
+  }
+  if (code === "identity_already_exists" || code === "email_exists") {
+    return "이 이메일은 이미 다른 계정에 연결돼 있어요. 현재 가족 계정에서 초대 코드를 만든 뒤 기존 이메일 계정으로 로그인해 참여해주세요.";
   }
   return fallback;
 }
@@ -1411,6 +1421,13 @@ function FamilySyncSection({ onWorkspaceChange }: { onWorkspaceChange: () => voi
   const [emailCode, setEmailCode] = useState("");
   const [loginRequested, setLoginRequested] = useState(false);
   const [loginEmail, setLoginEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [passwordConfirmation, setPasswordConfirmation] = useState("");
+  const [passwordLogin, setPasswordLogin] = useState("");
+  const [emailAccount, setEmailAccount] = useState(false);
+  const [anonymousAccount, setAnonymousAccount] = useState(false);
+  const [accountEmail, setAccountEmail] = useState("");
+  const [emailLinkSent, setEmailLinkSent] = useState(false);
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [displayName, setDisplayName] = useState("");
@@ -1443,6 +1460,8 @@ function FamilySyncSection({ onWorkspaceChange }: { onWorkspaceChange: () => voi
     client.auth.getSession().then(({ data }) => {
       if (!active) return;
       const nextUserLabel = data.session?.user ? data.session.user.email ?? "이 기기 보호자" : null;
+      setEmailAccount(Boolean(data.session?.user.email && !data.session.user.is_anonymous));
+      setAnonymousAccount(data.session?.user.is_anonymous === true);
       setUserEmail(nextUserLabel);
       setCurrentUserId(data.session?.user.id ?? null);
       if (nextUserLabel) void refreshWorkspace();
@@ -1451,11 +1470,15 @@ function FamilySyncSection({ onWorkspaceChange }: { onWorkspaceChange: () => voi
     const { data } = client.auth.onAuthStateChange((_event, session) => {
       if (!active) return;
       const nextUserLabel = session?.user ? session.user.email ?? "이 기기 보호자" : null;
+      setEmailAccount(Boolean(session?.user.email && !session.user.is_anonymous));
+      setAnonymousAccount(session?.user.is_anonymous === true);
       setUserEmail(nextUserLabel);
       setCurrentUserId(session?.user.id ?? null);
       setLoading(false);
       if (nextUserLabel) window.setTimeout(() => void refreshWorkspace(), 0);
       else {
+        setEmailAccount(false);
+        setAnonymousAccount(false);
         setWorkspace(null);
         onWorkspaceChange();
       }
@@ -1491,7 +1514,7 @@ function FamilySyncSection({ onWorkspaceChange }: { onWorkspaceChange: () => voi
       setLoginRequested(true);
       setLoginEmail(email.trim());
       setEmailCode("");
-      setMessage("이메일을 확인하고 6자리 코드를 이 화면에 입력해주세요.");
+      setMessage("로그인 링크를 열어 인증한 뒤, 가족 동기화에서 비밀번호를 설정하면 다음부터는 이메일과 비밀번호로 로그인할 수 있어요.");
     } catch (error) {
       setMessage(familyAuthMessage(error, "로그인 코드를 보내지 못했어요. 이메일 주소를 확인해주세요."));
     } finally {
@@ -1512,6 +1535,80 @@ function FamilySyncSection({ onWorkspaceChange }: { onWorkspaceChange: () => voi
       setMessage("로그인됐어요.");
     } catch (error) {
       setMessage(familyAuthMessage(error, "인증 코드가 다르거나 만료됐어요. 이메일을 확인하고 다시 시도해주세요."));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loginWithPassword = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    dismissMobileKeyboard();
+    setLoading(true);
+    setMessage(null);
+    try {
+      await signInFamilyWithPassword(email, passwordLogin);
+      setPasswordLogin("");
+      setMessage("로그인됐어요.");
+    } catch (error) {
+      setMessage(familyAuthMessage(error, "이메일 또는 비밀번호를 확인해주세요."));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const savePassword = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    dismissMobileKeyboard();
+    if (password !== passwordConfirmation) {
+      setMessage("비밀번호가 서로 달라요. 다시 확인해주세요.");
+      return;
+    }
+    setLoading(true);
+    setMessage(null);
+    try {
+      await setFamilyPassword(password);
+      setPassword("");
+      setPasswordConfirmation("");
+      setMessage("비밀번호를 설정했어요. 다음 기기부터 이메일과 비밀번호로 로그인할 수 있어요.");
+    } catch (error) {
+      setMessage(familyAuthMessage(error, "비밀번호를 설정하지 못했어요. 다시 시도해주세요."));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const linkCurrentAccountEmail = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    dismissMobileKeyboard();
+    setLoading(true);
+    setMessage(null);
+    try {
+      await linkFamilyAccountEmail(accountEmail, `${window.location.origin}/`);
+      setEmailLinkSent(true);
+      setMessage("확인 이메일 링크를 열어 이 계정에 이메일을 연결하세요. 데이터는 현재 가족 계정에 유지돼요.");
+    } catch (error) {
+      setMessage(familyAuthMessage(error, "이메일을 연결하지 못했어요. 주소와 Supabase 계정 연결 설정을 확인해주세요."));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const confirmAccountEmail = async () => {
+    setLoading(true);
+    setMessage(null);
+    try {
+      const account = await refreshFamilySession();
+      if (account.isAnonymous || !account.email) {
+        setMessage("아직 이메일 확인이 완료되지 않았어요. 받은 메일의 확인 링크를 연 뒤 다시 눌러주세요.");
+        return;
+      }
+      setAnonymousAccount(false);
+      setEmailAccount(true);
+      setUserEmail(account.email);
+      setEmailLinkSent(false);
+      setMessage("이메일이 확인됐어요. 이제 아래에서 비밀번호를 설정하세요.");
+    } catch (error) {
+      setMessage(familyAuthMessage(error, "계정 상태를 새로 확인하지 못했어요. 확인 링크를 연 뒤 다시 시도해주세요."));
     } finally {
       setLoading(false);
     }
@@ -1608,21 +1705,26 @@ function FamilySyncSection({ onWorkspaceChange }: { onWorkspaceChange: () => voi
               <span className="login-panel-icon"><Mail size={18} aria-hidden="true" /></span>
               <div>
                 <strong>이메일로 로그인</strong>
-                <p>메일의 6자리 코드를 입력하면 이 화면에서 로그인돼요.</p>
+                <p>비밀번호가 있으면 바로 로그인하고, 처음에는 이메일 링크로 인증해요.</p>
               </div>
             </div>
+            <form className="sync-form" onSubmit={loginWithPassword}>
+              <label><span>이메일</span><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@example.com" autoComplete="email" inputMode="email" required disabled={loading || loginRequested} /></label>
+              <label><span>비밀번호</span><input type="password" value={passwordLogin} onChange={(event) => setPasswordLogin(event.target.value)} autoComplete="current-password" required disabled={loading} /></label>
+              <button className="primary-action" type="submit" disabled={loading}>{loading ? "로그인 중…" : "이메일과 비밀번호로 로그인"}</button>
+            </form>
+            <div className="sync-divider"><span>처음 로그인 또는 비밀번호 재설정</span></div>
             <form className="sync-form" onSubmit={requestLogin}>
               <label><span>이메일</span><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@example.com" autoComplete="email" inputMode="email" required disabled={loading || loginRequested} /></label>
-              <button className="primary-action" type="submit" disabled={loading}><Mail size={17} aria-hidden="true" /> {loading ? "로그인 이메일 보내는 중…" : loginRequested ? "인증 코드 다시 받기" : "이메일 로그인 코드 받기"}</button>
+              <button className="secondary-action" type="submit" disabled={loading}><Mail size={17} aria-hidden="true" /> {loading ? "로그인 이메일 보내는 중…" : loginRequested ? "로그인 링크 다시 받기" : "로그인 링크 받기"}</button>
               <small>아이폰·아이패드마다 같은 이메일로 로그인하면 내 가족 공간을 다시 찾을 수 있어요.</small>
             </form>
             {loginRequested && (
               <form className="sync-form compact email-code-form" onSubmit={verifyLoginCode}>
-                <p className="email-code-address">{loginEmail}로 보낸 코드를 입력해주세요.</p>
+                <p className="email-code-address">{loginEmail} 메일에 6자리 코드가 있으면 여기에 입력하세요. 링크만 있다면 Safari에서 열어 로그인한 뒤 아래 비밀번호 설정을 진행하세요.</p>
                 <label><span>이메일 인증 코드</span><input type="text" value={emailCode} onChange={(event) => setEmailCode(event.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="6자리 코드" autoComplete="one-time-code" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} required disabled={loading} /></label>
                 <button className="secondary-action" type="submit" disabled={loading || emailCode.length !== 6}>{loading ? "확인 중…" : "이 화면에서 로그인"}</button>
                 <button className="text-action" type="button" disabled={loading} onClick={() => { setLoginRequested(false); setLoginEmail(""); setEmailCode(""); }}>다른 이메일 사용</button>
-                <small>메일에 숫자 코드가 없다면 Supabase의 Magic Link 이메일 템플릿에 <code>{"{{ .Token }}"}</code>을 포함해야 해요.</small>
               </form>
             )}
           </div>
@@ -1649,6 +1751,39 @@ function FamilySyncSection({ onWorkspaceChange }: { onWorkspaceChange: () => voi
             <button className="secondary-action" type="submit" disabled={!displayName.trim() || inviteInput.length < 10}>초대 코드로 참여</button>
           </form>
         </div>
+      )}
+
+      {userEmail && anonymousAccount && (
+        <form className="sync-form password-setup-form" onSubmit={linkCurrentAccountEmail}>
+          <div>
+            <strong>기존 가족 기록을 새 휴대폰에서도 사용하기</strong>
+            <p>이 이메일을 현재 기기 계정에 연결하면 가족 공간과 기록을 그대로 유지할 수 있어요.</p>
+          </div>
+          {!emailLinkSent ? (
+            <>
+              <label><span>이메일</span><input type="email" value={accountEmail} onChange={(event) => setAccountEmail(event.target.value)} placeholder="name@example.com" autoComplete="email" inputMode="email" required disabled={loading} /></label>
+              <button className="secondary-action" type="submit" disabled={loading}>{loading ? "확인 이메일 보내는 중…" : "이 계정에 이메일 연결"}</button>
+              <small>Supabase Authentication → Providers에서 Manual Linking을 켜야 할 수 있어요. 이미 다른 Supabase 계정에 등록된 이메일은 연결할 수 없습니다.</small>
+            </>
+          ) : (
+            <>
+              <p className="email-code-address">{accountEmail}로 받은 링크를 Safari에서 열어 이메일을 확인한 다음 돌아오세요.</p>
+              <button className="secondary-action" type="button" disabled={loading} onClick={() => void confirmAccountEmail()}>{loading ? "확인 중…" : "이메일 확인 완료"}</button>
+            </>
+          )}
+        </form>
+      )}
+
+      {userEmail && emailAccount && (
+        <form className="sync-form password-setup-form" onSubmit={savePassword}>
+          <div>
+            <strong>기기 변경에 대비해 비밀번호 설정</strong>
+            <p>이메일 링크로 로그인한 상태에서 비밀번호를 설정하면, 새 휴대폰에서도 가족 계정에 로그인할 수 있어요.</p>
+          </div>
+          <label><span>새 비밀번호 (8자 이상)</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" minLength={8} required disabled={loading} /></label>
+          <label><span>비밀번호 확인</span><input type="password" value={passwordConfirmation} onChange={(event) => setPasswordConfirmation(event.target.value)} autoComplete="new-password" minLength={8} required disabled={loading} /></label>
+          <button className="secondary-action" type="submit" disabled={loading || password.length < 8 || passwordConfirmation.length < 8}>{loading ? "저장 중…" : "비밀번호 저장"}</button>
+        </form>
       )}
 
       {userEmail && workspace && (

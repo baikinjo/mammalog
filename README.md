@@ -46,10 +46,12 @@ pnpm run build
    NEXT_PUBLIC_SUPABASE_ANON_KEY=your-publishable-or-anon-key
    ```
 
-5. 프로젝트를 재시작합니다: `pnpm run dev`. **우리 가족 → 가족 동기화**에서 이메일 코드를 요청하고, 받은 6자리 코드를 같은 PWA 화면에 입력합니다. 첫 로그인 뒤 가족 공간을 만들면 아이 프로필이 생성됩니다.
-6. iOS 홈 화면 앱에서 코드를 사용할 수 있도록 **Authentication → Email Templates → Magic Link** 템플릿에 `{{ .Token }}`을 포함합니다. **Authentication → URL Configuration**의 Site URL은 실제 앱 주소로 설정하고, 필요한 앱 주소와 `http://localhost:3000/**`를 Redirect URLs에 추가합니다.
+5. 프로젝트를 재시작합니다: `pnpm run dev`. 이미 익명 기기 계정에 가족 기록이 있다면 로그아웃하지 말고 **우리 가족 → 가족 동기화**에서 그 계정에 이메일을 연결합니다. Supabase **Authentication → Providers**에서 Manual Linking을 활성화해야 합니다. 확인 링크를 연 뒤 앱으로 돌아와 이메일 확인을 완료하고 비밀번호를 설정하세요. 이렇게 하면 기존 가족 데이터와 계정 ID가 유지됩니다. 별도 이메일 계정으로 새로 로그인하면 그 계정은 기존 익명 가족 공간과 별개이므로, 기존 계정에서 초대 코드를 만들어 연결해야 합니다.
+6. **Authentication → URL Configuration**의 Site URL을 실제 앱 주소로 설정하고, 앱 주소와 `http://localhost:3000/**`를 Redirect URLs에 추가합니다.
 7. 배포된 앱에서도 연결하려면 호스팅 서비스의 환경 변수에 같은 URL과 공개 키를 등록하고 다시 배포합니다. 이 저장소에는 배포 환경 변수가 없으므로, 로컬 `.env.local` 설정만으로는 이미 배포된 사이트가 연결되지 않습니다.
 
 ### iOS 홈 화면 앱에서 이메일 로그인
 
-iOS에서 메일의 로그인 링크가 Safari로 열리면 홈 화면 앱과 로그인 세션이 공유되지 않을 수 있습니다. 앱은 같은 화면에서 인증할 수 있도록 6자리 이메일 코드도 지원합니다. Supabase 대시보드의 **Authentication → Email Templates → Magic Link** 템플릿에 `{{ .Token }}`을 포함해 코드가 메일에 표시되도록 설정하세요. 로그인 이메일을 받은 뒤 링크를 누르지 말고 코드를 홈 화면 앱에 입력하면 됩니다.
+iOS에서 메일의 확인 링크가 Safari로 열리면 홈 화면 앱과 로그인 세션이 공유되지 않을 수 있습니다. 기존 기기 계정을 이메일에 연결한 경우, Safari에서 링크를 확인한 뒤 원래 PWA로 돌아와 **이메일 확인 완료**를 누르고 비밀번호를 설정하세요. 이후 홈 화면 앱이나 새 휴대폰에서는 같은 이메일과 비밀번호로 로그인해 기존 가족 데이터를 이용할 수 있습니다.
+
+원한다면 Supabase **Authentication → Email Templates → Magic Link** 템플릿에 `{{ .Token }}`을 넣어 이메일 코드 로그인을 사용할 수도 있습니다. 프로젝트에서 템플릿 편집이 잠겨 있으면 custom SMTP가 필요합니다. 비밀번호 로그인 방식에는 custom SMTP가 필요하지 않습니다.
