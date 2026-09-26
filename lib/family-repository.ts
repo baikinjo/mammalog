@@ -176,10 +176,19 @@ export async function saveChildIngredientState(
   if (error) throw error;
 }
 
-export async function sendMagicLink(email: string, redirectTo: string): Promise<void> {
+export async function sendFamilyLoginEmail(email: string, redirectTo: string): Promise<void> {
   const { error } = await getSupabaseClient().auth.signInWithOtp({
     email: email.trim(),
     options: { emailRedirectTo: redirectTo },
+  });
+  if (error) throw error;
+}
+
+export async function verifyFamilyEmailCode(email: string, token: string): Promise<void> {
+  const { error } = await getSupabaseClient().auth.verifyOtp({
+    email: email.trim(),
+    token: token.trim(),
+    type: "email",
   });
   if (error) throw error;
 }

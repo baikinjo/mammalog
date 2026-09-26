@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   ArrowLeft,
   Baby,
@@ -73,7 +73,8 @@ import {
   saveDailyRoutineLog,
   saveFamilyMealRecord,
   updateCustomIngredient,
-  sendMagicLink,
+  sendFamilyLoginEmail,
+  verifyFamilyEmailCode,
   signInFamilyAnonymously,
   signOutFamily,
   type FamilyMealReaction,
@@ -1407,6 +1408,9 @@ function FamilyMemberRemovalSheet({
 function FamilySyncSection({ onWorkspaceChange }: { onWorkspaceChange: () => void }) {
   const configured = isSupabaseConfigured();
   const [email, setEmail] = useState("");
+  const [emailCode, setEmailCode] = useState("");
+  const [loginRequested, setLoginRequested] = useState(false);
+  const [loginEmail, setLoginEmail] = useState("");
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [displayName, setDisplayName] = useState("");
@@ -1483,10 +1487,31 @@ function FamilySyncSection({ onWorkspaceChange }: { onWorkspaceChange: () => voi
     setLoading(true);
     setMessage(null);
     try {
-      await sendMagicLink(email, `${window.location.origin}/`);
-      setMessage("이메일로 로그인 링크를 보냈어요. 같은 기기에서 링크를 열어주세요.");
+      await sendFamilyLoginEmail(email, `${window.location.origin}/`);
+      setLoginRequested(true);
+      setLoginEmail(email.trim());
+      setEmailCode("");
+      setMessage("이메일을 확인하고 6자리 코드를 이 화면에 입력해주세요.");
     } catch (error) {
-      setMessage(familyAuthMessage(error, "로그인 링크를 보내지 못했어요. 이메일 주소를 확인해주세요."));
+      setMessage(familyAuthMessage(error, "로그인 코드를 보내지 못했어요. 이메일 주소를 확인해주세요."));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const verifyLoginCode = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    dismissMobileKeyboard();
+    setLoading(true);
+    setMessage(null);
+    try {
+      await verifyFamilyEmailCode(loginEmail, emailCode);
+      setLoginRequested(false);
+      setLoginEmail("");
+      setEmailCode("");
+      setMessage("로그인됐어요.");
+    } catch (error) {
+      setMessage(familyAuthMessage(error, "인증 코드가 다르거나 만료됐어요. 이메일을 확인하고 다시 시도해주세요."));
     } finally {
       setLoading(false);
     }
@@ -1583,14 +1608,23 @@ function FamilySyncSection({ onWorkspaceChange }: { onWorkspaceChange: () => voi
               <span className="login-panel-icon"><Mail size={18} aria-hidden="true" /></span>
               <div>
                 <strong>이메일로 로그인</strong>
-                <p>비밀번호 없이 받은 링크를 열면 로그인돼요.</p>
+                <p>메일의 6자리 코드를 입력하면 이 화면에서 로그인돼요.</p>
               </div>
             </div>
             <form className="sync-form" onSubmit={requestLogin}>
-              <label><span>이메일</span><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@example.com" autoComplete="email" inputMode="email" required disabled={loading} /></label>
-              <button className="primary-action" type="submit" disabled={loading}><Mail size={17} aria-hidden="true" /> {loading ? "로그인 링크 보내는 중…" : "이메일 로그인 링크 받기"}</button>
+              <label><span>이메일</span><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@example.com" autoComplete="email" inputMode="email" required disabled={loading || loginRequested} /></label>
+              <button className="primary-action" type="submit" disabled={loading}><Mail size={17} aria-hidden="true" /> {loading ? "로그인 이메일 보내는 중…" : loginRequested ? "인증 코드 다시 받기" : "이메일 로그인 코드 받기"}</button>
               <small>아이폰·아이패드마다 같은 이메일로 로그인하면 내 가족 공간을 다시 찾을 수 있어요.</small>
             </form>
+            {loginRequested && (
+              <form className="sync-form compact email-code-form" onSubmit={verifyLoginCode}>
+                <p className="email-code-address">{loginEmail}로 보낸 코드를 입력해주세요.</p>
+                <label><span>이메일 인증 코드</span><input type="text" value={emailCode} onChange={(event) => setEmailCode(event.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="6자리 코드" autoComplete="one-time-code" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} required disabled={loading} /></label>
+                <button className="secondary-action" type="submit" disabled={loading || emailCode.length !== 6}>{loading ? "확인 중…" : "이 화면에서 로그인"}</button>
+                <button className="text-action" type="button" disabled={loading} onClick={() => { setLoginRequested(false); setLoginEmail(""); setEmailCode(""); }}>다른 이메일 사용</button>
+                <small>메일에 숫자 코드가 없다면 Supabase의 Magic Link 이메일 템플릿에 <code>{"{{ .Token }}"}</code>을 포함해야 해요.</small>
+              </form>
+            )}
           </div>
           <div className="sync-divider"><span>또는</span></div>
           <div className="guest-connect-panel">
@@ -2471,6 +2505,8 @@ export function MealApp() {
   const [routineLogOpen, setRoutineLogOpen] = useState(false);
   const [routineTargetDate, setRoutineTargetDate] = useState(() => toDateId(new Date()));
   const [familyWorkspace, setFamilyWorkspace] = useState<FamilyWorkspace | null>(null);
+  const [familyDataRefreshError, setFamilyDataRefreshError] = useState<string | null>(null);
+  const familyDataUserIdRef = useRef<string | null>(null);
   const [selectedDate, setSelectedDate] = useState(() => toDateId(new Date()));
   const [calendarCursor, setCalendarCursor] = useState<CalendarCursor>(() => {
     const today = new Date();
@@ -2552,33 +2588,50 @@ export function MealApp() {
 
   const refreshFamilyData = useCallback(async () => {
     if (!isSupabaseConfigured()) return;
-    const client = getSupabaseClient();
-    const { data } = await client.auth.getSession();
-    if (!data.session?.user) {
-      setFamilyWorkspace(null);
-      setRecords([]);
-      setIngredientStates([]);
-      setMealHistory([]);
-      setCustomIngredients([]);
-      setRoutineLogs([]);
-      return;
-    }
-
     try {
+      const client = getSupabaseClient();
+      const { data, error } = await client.auth.getSession();
+      if (error) throw error;
+      if (!data.session?.user) {
+        setFamilyWorkspace(null);
+        setRecords([]);
+        setIngredientStates([]);
+        setMealHistory([]);
+        setCustomIngredients([]);
+        setRoutineLogs([]);
+        setSettings({ start: "만 6개월", time: "10:00", style: "냉동 큐브 활용" });
+        familyDataUserIdRef.current = null;
+        setFamilyDataRefreshError(null);
+        return;
+      }
+
+      if (familyDataUserIdRef.current !== data.session.user.id) {
+        setFamilyWorkspace(null);
+        setRecords([]);
+        setIngredientStates([]);
+        setMealHistory([]);
+        setCustomIngredients([]);
+        setRoutineLogs([]);
+        setSettings({ start: "만 6개월", time: "10:00", style: "냉동 큐브 활용" });
+        familyDataUserIdRef.current = data.session.user.id;
+      }
+
       let nextWorkspace = await loadFamilyWorkspace();
       if (nextWorkspace && !nextWorkspace.children.length) {
         await ensureDefaultChild(nextWorkspace.householdId);
         nextWorkspace = await loadFamilyWorkspace();
       }
-      setFamilyWorkspace(nextWorkspace);
       const child = nextWorkspace?.children[0];
       const householdId = nextWorkspace?.householdId;
       if (!child || !householdId) {
+        const nextCustomIngredients = householdId ? await loadCustomIngredients(householdId) : [];
+        setFamilyWorkspace(nextWorkspace);
         setRecords([]);
         setIngredientStates([]);
         setMealHistory([]);
-        setCustomIngredients(householdId ? await loadCustomIngredients(householdId) : []);
+        setCustomIngredients(nextCustomIngredients);
         setRoutineLogs([]);
+        setFamilyDataRefreshError(null);
         return;
       }
       const [nextRecords, recommendationInputs, nextCustomIngredients, nextRoutineLogs] = await Promise.all([
@@ -2587,6 +2640,7 @@ export function MealApp() {
         loadCustomIngredients(householdId),
         loadDailyRoutineLogs(child.id).catch(() => [] as DailyRoutineLog[]),
       ]);
+      setFamilyWorkspace(nextWorkspace);
       setRecords(nextRecords);
       setIngredientStates(recommendationInputs.states);
       setMealHistory(recommendationInputs.history);
@@ -2597,13 +2651,9 @@ export function MealApp() {
         time: child.preferredMealTime,
         style: preparationStyleLabels[child.preparationStyle],
       });
+      setFamilyDataRefreshError(null);
     } catch {
-      setFamilyWorkspace(null);
-      setRecords([]);
-      setIngredientStates([]);
-      setMealHistory([]);
-      setCustomIngredients([]);
-      setRoutineLogs([]);
+      setFamilyDataRefreshError("가족 기록을 불러오지 못했어요. 연결 상태를 확인하고 다시 시도해주세요.");
     }
   }, []);
 
@@ -3024,6 +3074,12 @@ export function MealApp() {
       </header>
 
       <main id="top" className="app-main">
+        {familyDataRefreshError && (
+          <div className="setup-warning family-data-warning" role="alert">
+            <span>{familyDataRefreshError}</span>
+            <button className="family-data-retry" type="button" onClick={() => void refreshFamilyData()}>다시 시도</button>
+          </div>
+        )}
         {activeTab === "today" && (
           displayProfile.stage !== "prestart" || previewStarted ? (
             <TodayMeal

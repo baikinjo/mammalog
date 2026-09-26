@@ -1,4 +1,5 @@
--- Run once in Supabase SQL Editor after schema.sql and book_engine_v2.sql.
+-- Run once in Supabase SQL Editor after schema.sql, book_engine_v2.sql,
+-- and routine_logs.sql.
 -- Adds owner-only progress reset, family member removal, and authenticated account deletion.
 
 create or replace function public.reset_child_progress(target_child_id uuid)
