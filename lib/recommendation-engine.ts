@@ -330,6 +330,65 @@ export function applyTrialOutcome(
     : [...states, next];
 }
 
+const editedOutcomeStatus: Record<Exclude<TrialOutcome, "accepted">, ChildIngredientState["status"]> = {
+  tasteRejected: "rejected",
+  textureDifficulty: "paused",
+  suspectedReaction: "suspectedReaction",
+};
+
+const statusRestriction: Partial<Record<ChildIngredientState["status"], number>> = {
+  rejected: 1,
+  paused: 2,
+  suspectedReaction: 3,
+  avoid: 4,
+};
+
+/**
+ * Applies a corrected reaction from an edited meal record to the ingredient that meal introduced.
+ * The exposure was already counted when the record was created, so only the status can move, and only toward
+ * a more restrictive one: an edit never clears a pause or a suspected reaction. A meal outside the ingredient's
+ * recorded trial window (for example a legacy row flagged without a trial) leaves the state unchanged.
+ */
+export function applyEditedTrialOutcome(
+  states: ChildIngredientState[],
+  ingredientId: string,
+  outcome: TrialOutcome,
+  mealRecordedAt: string,
+  reactionNote?: string,
+): ChildIngredientState[] {
+  if (outcome === "accepted") return states;
+  const status = editedOutcomeStatus[outcome];
+  const lastReaction = status === "suspectedReaction" ? reactionNote?.trim() || "확인 필요" : null;
+  const existing = states.find((state) => state.ingredientId === ingredientId);
+  if (!existing) {
+    return [...states, {
+      ingredientId,
+      status,
+      testDay: null,
+      exposureCount: 1,
+      firstOfferedAt: mealRecordedAt,
+      lastOfferedAt: mealRecordedAt,
+      acceptedTextureMm: [],
+      lastReaction,
+    }];
+  }
+
+  const mealDay = isoDate(new Date(mealRecordedAt));
+  const insideTrialWindow = Boolean(existing.firstOfferedAt && existing.lastOfferedAt)
+    && mealDay >= isoDate(new Date(existing.firstOfferedAt!))
+    && mealDay <= isoDate(new Date(existing.lastOfferedAt!));
+  if (!insideTrialWindow) return states;
+  if ((statusRestriction[status] ?? 0) <= (statusRestriction[existing.status] ?? 0)) return states;
+
+  const next: ChildIngredientState = {
+    ...existing,
+    status,
+    testDay: status === "paused" ? existing.testDay : null,
+    lastReaction: lastReaction ?? existing.lastReaction ?? null,
+  };
+  return states.map((state) => state.ingredientId === ingredientId ? next : state);
+}
+
 function allowedPassedIngredients(
   profile: BabyProfile,
   definitions: IngredientDefinition[],
@@ -549,7 +608,7 @@ function buildChecks(
   const meatIntroduced = introductionGroups.has("meat");
   const checks: TargetCheck[] = [
     { id: "grain", label: "곡류", met: hasGroup("grain", "starchyFood"), detail: "매 끼의 기본 에너지 식품" },
-    { id: "daily-meat", label: "매일 고기", met: !meatIntroduced || hasGroup("redMeat"), detail: meatIntroduced ? `${guide.meatGramsPerDay[0]}~${guide.meatGramsPerDay[1]}g/일 목표` : "곡류 적응 뒤 시작" },
+    { id: "daily-meat", label: "매일 고기", met: !meatIntroduced || hasGroup("redMeat"), detail: meatIntroduced ? `하루 ${guide.meatGramsPerDay[0]}~${guide.meatGramsPerDay[1]}g 이상 목표` : "곡류 적응 뒤 시작" },
     { id: "new-food", label: "새 재료 한 가지", met: newCount <= 1, detail: newCount ? `${newCount}개 관찰 중` : "현재 관찰 재료 없음" },
     { id: "fish-cap", label: "생선 주 2회", met: fishCountBeforeToday + fishToday <= 2, detail: `최근 7일 ${fishCountBeforeToday + fishToday}/2회` },
     { id: "texture", label: "현재 질감", met: textureMm >= guide.textureMmRange[0], detail: `${textureMm}mm 안팎` },
@@ -645,7 +704,7 @@ export function createBookBasedDayPlan(
           ? `${template.sourcePage}의 단계별 메뉴를 먹어본 재료와 최근 반복에 맞춰 골랐어요.`
           : "오늘의 식품군 균형과 최근 반복을 함께 보고 조합했어요.",
       redMeats.length || currentTrial?.foodGroup === "redMeat"
-        ? `책의 매일 고기 원칙과 ${guide.meatGramsPerDay[0]}~${guide.meatGramsPerDay[1]}g 목표를 반영했어요.`
+        ? `책의 매일 고기 원칙과 하루 ${guide.meatGramsPerDay[0]}~${guide.meatGramsPerDay[1]}g 이상 목표를 반영했어요.`
         : "아직 통과한 붉은 고기가 없어 도입 순서에서 우선 후보로 유지해요.",
       `현재 ${guide.label} 최소 질감에 맞춰 ${textureMm}mm 안팎으로 제안했어요.`,
     ];

@@ -18,6 +18,7 @@
 - `tests/recommendation-engine.test.ts`: 도입 15일 시뮬레이션과 안전·빈도·단계 검증
 - `supabase/schema.sql`: 가족 공유를 위한 기본 데이터베이스
 - `supabase/book_engine_v2.sql`: 책 기반 규칙·반응·추천 스냅샷 확장 마이그레이션
+- `supabase/ingredient_catalog_sync.sql`: `lib/ingredient-catalog.ts`의 기본 재료 전체를 `ingredients` 테이블에 맞추는 재실행 가능한 SQL (`pnpm exec tsx scripts/generate-ingredient-catalog-sql.ts`로 생성)
 
 ## 로컬 명령
 
@@ -38,6 +39,9 @@ pnpm run build
    2. `supabase/book_engine_v2.sql`
    3. `supabase/routine_logs.sql`
    4. `supabase/data_controls.sql`
+   5. `supabase/ingredient_catalog_sync.sql`
+
+   기존 프로젝트에는 1~4를 다시 실행하지 말고, `lib/ingredient-catalog.ts`의 기본 재료가 바뀔 때마다 `supabase/ingredient_catalog_sync.sql`만 다시 실행하세요. 기본 재료 행만 갱신하고 가족 기록과 직접 추가한 재료는 건드리지 않으며, 마지막 조회 결과가 기본 재료 수(현재 61)와 같으면 완료입니다.
 3. **Project Settings → API Keys**에서 Project URL과 publishable key(레거시 프로젝트에서는 anon key)를 확인합니다. 앱에서 사용하는 값은 브라우저에 노출되는 공개 키여야 합니다. `service_role` 또는 `sb_secret_` 키는 절대 사용하지 마세요.
 4. `C:\src\mammalog\.env.local` 파일을 만들고 다음 값을 입력합니다. `.env.local`은 Git에서 제외됩니다.
 

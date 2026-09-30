@@ -33,6 +33,7 @@ export interface FamilyMealRecord {
   plannedTime: string;
   title: string;
   ingredientIds: string[];
+  newExposureIngredientId: string | null;
   completion: FamilyMealCompletion;
   reaction: FamilyMealReaction;
   note: string;
@@ -62,6 +63,7 @@ export interface SaveFamilyMealInput {
 
 interface MealPlanItemRow {
   ingredient_id: string;
+  is_new_exposure?: boolean | null;
 }
 
 interface RecommendationHistoryRow {
@@ -118,7 +120,11 @@ export async function loadDailyRoutineLogs(childId: string): Promise<DailyRoutin
     .eq("child_id", childId)
     .order("log_date", { ascending: false })
     .limit(60);
-  if (error) throw error;
+  if (error) {
+    // Until routine_logs.sql is applied the table does not exist; that means "no logs yet", not a failure.
+    if (error.code === "PGRST205" || error.code === "42P01") return [];
+    throw error;
+  }
   return (data ?? []).map((row) => ({
     childId: row.child_id,
     date: row.log_date,
@@ -444,7 +450,7 @@ export async function archiveCustomIngredient(
 function fourMonthsAgo(): string {
   const date = new Date();
   date.setMonth(date.getMonth() - 4);
-  return date.toISOString().slice(0, 10);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
 export async function ensureDefaultChild(householdId: string): Promise<BabyProfile> {
@@ -580,7 +586,7 @@ export async function saveDailyRecommendation(
 export async function loadFamilyMealRecords(childId: string): Promise<FamilyMealRecord[]> {
   const { data, error } = await getSupabaseClient()
     .from("meal_plans")
-    .select("id,meal_date,meal_index,planned_time,title,texture_mm,meal_plan_items(ingredient_id),meal_logs(id,completion,reaction,note,recorded_by,recorded_at)")
+    .select("id,meal_date,meal_index,planned_time,title,texture_mm,meal_plan_items(ingredient_id,is_new_exposure),meal_logs(id,completion,reaction,note,recorded_by,recorded_at)")
     .eq("child_id", childId)
     .eq("status", "completed")
     .order("meal_date", { ascending: false });
@@ -597,6 +603,7 @@ export async function loadFamilyMealRecords(childId: string): Promise<FamilyMeal
       plannedTime: String(plan.planned_time).slice(0, 5),
       title: plan.title,
       ingredientIds: (plan.meal_plan_items ?? []).map((item) => item.ingredient_id),
+      newExposureIngredientId: (plan.meal_plan_items ?? []).find((item) => item.is_new_exposure)?.ingredient_id ?? null,
       completion: log.completion,
       reaction: log.reaction,
       note: log.note ?? "",
@@ -621,6 +628,16 @@ export async function saveFamilyMealRecord(input: SaveFamilyMealInput): Promise<
   if (authError) throw authError;
   if (!authData.user) throw new Error("로그인이 필요해요.");
 
+  const { data: existingPlan, error: existingPlanError } = await client
+    .from("meal_plans")
+    .select("id,meal_plan_items(id)")
+    .eq("child_id", input.childId)
+    .eq("meal_date", input.date)
+    .eq("meal_index", input.mealIndex)
+    .maybeSingle();
+  if (existingPlanError) throw existingPlanError;
+  const previousItemIds = ((existingPlan?.meal_plan_items ?? []) as Array<{ id: string }>).map((item) => item.id);
+
   const { data: plan, error: planError } = await client
     .from("meal_plans")
     .upsert({
@@ -644,23 +661,32 @@ export async function saveFamilyMealRecord(input: SaveFamilyMealInput): Promise<
     .single();
   if (planError) throw planError;
 
-  const { error: deleteItemError } = await client
-    .from("meal_plan_items")
-    .delete()
-    .eq("meal_plan_id", plan.id);
-  if (deleteItemError) throw deleteItemError;
+  // A plan created by this save must not stay behind as a "completed" meal without items or a log.
+  const discardCreatedPlan = async () => {
+    if (!existingPlan) await client.from("meal_plans").delete().eq("id", plan.id);
+  };
 
+  // Insert the replacement items before removing the previous ones so a failed save never empties a meal.
   const { error: itemError } = await client.from("meal_plan_items").insert(
-    input.ingredients.map((ingredient, index) => ({
+    input.ingredients.map((ingredient) => ({
       meal_plan_id: plan.id,
       ingredient_id: ingredient.id,
       role: roleForIngredient(ingredient),
-      is_new_exposure: input.newExposureIngredientId
-        ? ingredient.id === input.newExposureIngredientId
-        : index === 0,
+      is_new_exposure: ingredient.id === input.newExposureIngredientId,
     })),
   );
-  if (itemError) throw itemError;
+  if (itemError) {
+    await discardCreatedPlan();
+    throw itemError;
+  }
+
+  if (previousItemIds.length) {
+    const { error: deleteItemError } = await client
+      .from("meal_plan_items")
+      .delete()
+      .in("id", previousItemIds);
+    if (deleteItemError) throw deleteItemError;
+  }
 
   const now = input.recordedAt ?? new Date().toISOString();
   const { error: logError } = await client.from("meal_logs").upsert({
@@ -673,7 +699,35 @@ export async function saveFamilyMealRecord(input: SaveFamilyMealInput): Promise<
     texture_mm: input.textureMm,
     updated_at: now,
   }, { onConflict: "meal_plan_id" });
-  if (logError) throw logError;
+  if (logError) {
+    await discardCreatedPlan();
+    throw logError;
+  }
+}
+
+export async function updateFamilyMealRecord(
+  mealPlanId: string,
+  update: Pick<SaveFamilyMealInput, "completion" | "reaction" | "note">,
+): Promise<void> {
+  const client = getSupabaseClient();
+  const { data: authData, error: authError } = await client.auth.getUser();
+  if (authError) throw authError;
+  if (!authData.user) throw new Error("로그인이 필요해요.");
+
+  // An edit only changes the log; the meal's title, time, texture, items and recommendation snapshot stay as recorded.
+  const { error } = await client
+    .from("meal_logs")
+    .update({
+      completion: update.completion,
+      reaction: update.reaction,
+      note: update.note.trim() || null,
+      recorded_by: authData.user.id,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("meal_plan_id", mealPlanId)
+    .select("id")
+    .single();
+  if (error) throw error;
 }
 
 function mapChildRow(row: ChildRow): BabyProfile {

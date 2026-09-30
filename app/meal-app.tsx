@@ -28,11 +28,13 @@ import {
 } from "../lib/demo-data";
 import { getStageGuide } from "../lib/book-knowledge";
 import {
+  applyEditedTrialOutcome,
   applyTrialOutcome,
   createBookBasedDayPlan,
   createInitialMealSuggestion,
   hasStartReadiness,
   resolveMealTimes,
+  type TrialOutcome,
 } from "../lib/recommendation-engine";
 import type {
   AllergenGroup,
@@ -73,6 +75,7 @@ import {
   saveDailyRoutineLog,
   saveFamilyMealRecord,
   updateCustomIngredient,
+  updateFamilyMealRecord,
   sendFamilyLoginEmail,
   verifyFamilyEmailCode,
   signInFamilyWithPassword,
@@ -126,6 +129,13 @@ const reactionLabels: Record<FamilyMealReaction, string> = {
   taste_rejection: "맛을 거부함",
   texture_difficulty: "질감이 어려웠음",
   needs_review: "확인 필요",
+};
+
+const trialOutcomeByReaction: Record<FamilyMealReaction, TrialOutcome> = {
+  none: "accepted",
+  taste_rejection: "tasteRejected",
+  texture_difficulty: "textureDifficulty",
+  needs_review: "suspectedReaction",
 };
 
 const ingredientStatusLabels: Record<ChildIngredientState["status"], string> = {
@@ -299,6 +309,11 @@ function toDateId(date: Date) {
 function parseDateId(dateId: string) {
   const [year, month, day] = dateId.split("-").map(Number);
   return new Date(year, month - 1, day);
+}
+
+function planDateFor(todayId: string) {
+  const now = new Date();
+  return toDateId(now) === todayId ? now : parseDateId(todayId);
 }
 
 function formatKoreanDate(dateId: string) {
@@ -631,8 +646,9 @@ function TodayMeal({
       ingredients,
       ingredientStates,
       mealHistory,
+      planDateFor(todayId),
     ),
-    [ingredientStates, ingredients, mealHistory, planProfile],
+    [ingredientStates, ingredients, mealHistory, planProfile, todayId],
   );
   const todayRecords = useMemo(
     () => records.filter((record) => record.date === todayId),
@@ -2633,7 +2649,7 @@ export function MealApp() {
   const [recordOpen, setRecordOpen] = useState(false);
   const [recordIngredientIds, setRecordIngredientIds] = useState<string[] | null>(null);
   const [recordTargetMealIndex, setRecordTargetMealIndex] = useState(1);
-  const [todayId] = useState(() => toDateId(new Date()));
+  const [todayId, setTodayId] = useState(() => toDateId(new Date()));
   const [recordTargetDate, setRecordTargetDate] = useState(() => toDateId(new Date()));
   const [records, setRecords] = useState<FamilyMealRecord[]>([]);
   const [routineLogs, setRoutineLogs] = useState<DailyRoutineLog[]>([]);
@@ -2642,6 +2658,7 @@ export function MealApp() {
   const [familyWorkspace, setFamilyWorkspace] = useState<FamilyWorkspace | null>(null);
   const [familyDataRefreshError, setFamilyDataRefreshError] = useState<string | null>(null);
   const familyDataUserIdRef = useRef<string | null>(null);
+  const familyDataRequestRef = useRef(0);
   const [selectedDate, setSelectedDate] = useState(() => toDateId(new Date()));
   const [calendarCursor, setCalendarCursor] = useState<CalendarCursor>(() => {
     const today = new Date();
@@ -2676,8 +2693,9 @@ export function MealApp() {
       allIngredients,
       ingredientStates,
       mealHistory,
+      planDateFor(todayId),
     ),
-    [allIngredients, displayProfile, ingredientStates, mealHistory],
+    [allIngredients, displayProfile, ingredientStates, mealHistory, todayId],
   );
   const currentAdaptiveReview = useMemo(
     () => createAdaptiveReview(recommendationProfile(displayProfile), mealHistory, routineLogs),
@@ -2723,10 +2741,15 @@ export function MealApp() {
 
   const refreshFamilyData = useCallback(async () => {
     if (!isSupabaseConfigured()) return;
+    // Focus, interval, auth and post-save refreshes can overlap; only the newest one may update state.
+    const requestId = familyDataRequestRef.current + 1;
+    familyDataRequestRef.current = requestId;
+    const isLatestRequest = () => familyDataRequestRef.current === requestId;
     try {
       const client = getSupabaseClient();
       const { data, error } = await client.auth.getSession();
       if (error) throw error;
+      if (!isLatestRequest()) return;
       if (!data.session?.user) {
         setFamilyWorkspace(null);
         setRecords([]);
@@ -2760,6 +2783,7 @@ export function MealApp() {
       const householdId = nextWorkspace?.householdId;
       if (!child || !householdId) {
         const nextCustomIngredients = householdId ? await loadCustomIngredients(householdId) : [];
+        if (!isLatestRequest()) return;
         setFamilyWorkspace(nextWorkspace);
         setRecords([]);
         setIngredientStates([]);
@@ -2773,23 +2797,52 @@ export function MealApp() {
         loadFamilyMealRecords(child.id),
         loadRecommendationInputs(child.id),
         loadCustomIngredients(householdId),
-        loadDailyRoutineLogs(child.id).catch(() => [] as DailyRoutineLog[]),
+        loadDailyRoutineLogs(child.id).catch(() => null),
       ]);
+      if (!isLatestRequest()) return;
       setFamilyWorkspace(nextWorkspace);
       setRecords(nextRecords);
       setIngredientStates(recommendationInputs.states);
       setMealHistory(recommendationInputs.history);
       setCustomIngredients(nextCustomIngredients);
-      setRoutineLogs(nextRoutineLogs);
+      if (nextRoutineLogs) setRoutineLogs(nextRoutineLogs);
       setSettings({
         start: formatProfileStart(child),
         time: child.preferredMealTime,
         style: preparationStyleLabels[child.preparationStyle],
       });
-      setFamilyDataRefreshError(null);
+      setFamilyDataRefreshError(nextRoutineLogs
+        ? null
+        : "수유·간식·먹기 연습 기록을 불러오지 못했어요. 연결 상태를 확인하고 다시 시도해주세요.");
     } catch {
+      if (!isLatestRequest()) return;
       setFamilyDataRefreshError("가족 기록을 불러오지 못했어요. 연결 상태를 확인하고 다시 시도해주세요.");
     }
+  }, []);
+
+  useEffect(() => {
+    let midnightTimer = 0;
+    const scheduleNextDay = () => {
+      window.clearTimeout(midnightTimer);
+      const now = new Date();
+      const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+      midnightTimer = window.setTimeout(syncToday, nextMidnight.getTime() - now.getTime() + 1_000);
+    };
+    const syncToday = () => {
+      setTodayId(toDateId(new Date()));
+      scheduleNextDay();
+    };
+    const syncWhenVisible = () => {
+      if (document.visibilityState === "visible") syncToday();
+    };
+    scheduleNextDay();
+    window.addEventListener("focus", syncWhenVisible);
+    document.addEventListener("visibilitychange", syncWhenVisible);
+    return () => {
+      window.clearTimeout(midnightTimer);
+      window.removeEventListener("focus", syncWhenVisible);
+      document.removeEventListener("visibilitychange", syncWhenVisible);
+    };
   }, []);
 
   useEffect(() => {
@@ -2823,69 +2876,75 @@ export function MealApp() {
       return;
     }
 
-    const planProfile = recommendationProfile(currentChild);
-    const plan = createBookBasedDayPlan(
-      planProfile,
-      allIngredients,
-      ingredientStates,
-      mealHistory,
-      parseDateId(recordTargetDate),
-    );
-    const meal = plan.meals.find((item) => item.index === recordTargetMealIndex);
-    if (!meal) {
-      showToast("오늘 기록할 추천 식사를 만들지 못했어요.");
-      return;
-    }
-
     try {
-      const chosenIngredientIds = editingRecord?.ingredientIds ?? recordIngredientIds;
-      const chosenIngredients = chosenIngredientIds?.map((id) => allIngredients.find((ingredient) => ingredient.id === id)).filter((ingredient): ingredient is IngredientDefinition => Boolean(ingredient));
-      const recordedIngredients = chosenIngredients?.length ? chosenIngredients : meal.items.map((item) => item.ingredient);
-      await saveFamilyMealRecord({
-        childId: currentChild.id,
-        date: recordTargetDate,
-        mealIndex: recordTargetMealIndex,
-        plannedTime: meal.time,
-        recordedAt: mealTimestamp(recordTargetDate, meal.time),
-        title: meal.title,
-        ingredients: recordedIngredients,
-        newExposureIngredientId: plan.currentTrial && meal.items.some((item) => item.ingredient.id === plan.currentTrial?.id)
-          ? plan.currentTrial.id
-          : null,
-        completion: draft.amount,
-        reaction: draft.reaction,
-        note: draft.note,
-        stage: plan.stage,
-        textureMm: currentChild.textureMm || 1,
-        servingGuide: meal.servingGuide,
-        textureGuide: meal.textureGuide,
-        recommendationReasons: meal.reasons,
-      });
-      const includesCurrentTrial = plan.currentTrial && recordedIngredients.some((ingredient) => ingredient.id === plan.currentTrial?.id);
-      if (!editingRecord && plan.currentTrial && includesCurrentTrial) {
-        const outcome = draft.reaction === "needs_review"
-          ? "suspectedReaction"
-          : draft.reaction === "taste_rejection"
-            ? "tasteRejected"
-            : draft.reaction === "texture_difficulty"
-              ? "textureDifficulty"
-              : "accepted";
-        const nextStates = applyTrialOutcome(
+      const outcome = trialOutcomeByReaction[draft.reaction];
+      if (editingRecord) {
+        await updateFamilyMealRecord(editingRecord.mealPlanId, {
+          completion: draft.amount,
+          reaction: draft.reaction,
+          note: draft.note,
+        });
+        const introducedIngredientId = editingRecord.newExposureIngredientId;
+        const nextStates = introducedIngredientId
+          ? applyEditedTrialOutcome(ingredientStates, introducedIngredientId, outcome, editingRecord.recordedAt, draft.note)
+          : ingredientStates;
+        const nextState = nextStates.find((state) => state.ingredientId === introducedIngredientId);
+        if (nextStates !== ingredientStates && nextState) await saveChildIngredientState(currentChild.id, nextState);
+      } else {
+        const planProfile = recommendationProfile(currentChild);
+        const plan = createBookBasedDayPlan(
+          planProfile,
+          allIngredients,
           ingredientStates,
-          plan.currentTrial.id,
-          outcome,
-          mealTimestamp(recordTargetDate, meal.time),
-          getStageGuide(plan.stage).newFoodIntervalDays[1],
-          draft.note,
+          mealHistory,
+          parseDateId(recordTargetDate),
         );
-        const nextState = nextStates.find((state) => state.ingredientId === plan.currentTrial?.id);
-        if (nextState) await saveChildIngredientState(currentChild.id, nextState);
+        const meal = plan.meals.find((item) => item.index === recordTargetMealIndex);
+        if (!meal) {
+          showToast("오늘 기록할 추천 식사를 만들지 못했어요.");
+          return;
+        }
+        const chosenIngredients = recordIngredientIds?.map((id) => allIngredients.find((ingredient) => ingredient.id === id)).filter((ingredient): ingredient is IngredientDefinition => Boolean(ingredient));
+        const recordedIngredients = chosenIngredients?.length ? chosenIngredients : meal.items.map((item) => item.ingredient);
+        await saveFamilyMealRecord({
+          childId: currentChild.id,
+          date: recordTargetDate,
+          mealIndex: recordTargetMealIndex,
+          plannedTime: meal.time,
+          recordedAt: mealTimestamp(recordTargetDate, meal.time),
+          title: meal.title,
+          ingredients: recordedIngredients,
+          newExposureIngredientId: plan.currentTrial && meal.items.some((item) => item.ingredient.id === plan.currentTrial?.id)
+            ? plan.currentTrial.id
+            : null,
+          completion: draft.amount,
+          reaction: draft.reaction,
+          note: draft.note,
+          stage: plan.stage,
+          textureMm: currentChild.textureMm || 1,
+          servingGuide: meal.servingGuide,
+          textureGuide: meal.textureGuide,
+          recommendationReasons: meal.reasons,
+        });
+        const includesCurrentTrial = plan.currentTrial && recordedIngredients.some((ingredient) => ingredient.id === plan.currentTrial?.id);
+        if (plan.currentTrial && includesCurrentTrial) {
+          const nextStates = applyTrialOutcome(
+            ingredientStates,
+            plan.currentTrial.id,
+            outcome,
+            mealTimestamp(recordTargetDate, meal.time),
+            getStageGuide(plan.stage).newFoodIntervalDays[1],
+            draft.note,
+          );
+          const nextState = nextStates.find((state) => state.ingredientId === plan.currentTrial?.id);
+          if (nextState) await saveChildIngredientState(currentChild.id, nextState);
+        }
+        await saveDailyRecommendation(currentChild.id, plan, {
+          profile: planProfile,
+          ingredientStates,
+          recentHistory: mealHistory.slice(-21),
+        }).catch(() => undefined);
       }
-      await saveDailyRecommendation(currentChild.id, plan, {
-        profile: planProfile,
-        ingredientStates,
-        recentHistory: mealHistory.slice(-21),
-      }).catch(() => undefined);
       await refreshFamilyData();
       const recordedDay = parseDateId(recordTargetDate);
       setRecordOpen(false);

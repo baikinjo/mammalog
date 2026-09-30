@@ -33,7 +33,7 @@ test("supports email link, OTP, password login, and setting an account password"
     identities: [],
     is_anonymous: true,
   };
-  let currentUser = anonymousUser;
+  let currentUser: typeof emailUser | typeof anonymousUser = anonymousUser;
   const createSession = (user: typeof emailUser | typeof anonymousUser) => ({
     access_token: `access-${user.id}`,
     token_type: "bearer",

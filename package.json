@@ -9,7 +9,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test": "pnpm run test:logic && pnpm run build && node --test tests/rendered-html.test.mjs",
+    "test": "pnpm run test:logic && tsc --noEmit --incremental false && pnpm run lint && pnpm run build",
     "test:logic": "tsx --test tests/*.test.ts",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"
   },

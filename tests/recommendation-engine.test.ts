@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ingredientCatalog } from "../lib/ingredient-catalog";
+import { ingredientById, ingredientCatalog } from "../lib/ingredient-catalog";
 import {
+  applyEditedTrialOutcome,
   applyTrialOutcome,
   chooseNextIngredient,
   countRecentFish,
@@ -115,6 +116,40 @@ test("moves a new ingredient through testing, passed, and reaction states", () =
   assert.equal(states.find((state) => state.ingredientId === "egg")?.lastReaction, "두드러기");
 });
 
+test("an edited trial record escalates the introduced ingredient but never clears a reaction", () => {
+  const at = (day: number) => new Date(2026, 6, day, 10).toISOString();
+  const rice: ChildIngredientState = { ingredientId: "rice", status: "passed", testDay: null, exposureCount: 3, firstOfferedAt: at(1), lastOfferedAt: at(3), lastReaction: null };
+  const egg: ChildIngredientState = { ingredientId: "egg", status: "passed", testDay: null, exposureCount: 3, firstOfferedAt: at(10), lastOfferedAt: at(12), lastReaction: null };
+  const states = [rice, egg];
+
+  const suspected = applyEditedTrialOutcome(states, "egg", "suspectedReaction", at(11), "입 주변 두드러기");
+  assert.deepEqual(suspected.find((state) => state.ingredientId === "egg"), { ...egg, status: "suspectedReaction", lastReaction: "입 주변 두드러기" });
+
+  const testing: ChildIngredientState = { ...egg, status: "testing", testDay: 3, exposureCount: 2 };
+  assert.deepEqual(
+    applyEditedTrialOutcome([rice, testing], "egg", "textureDifficulty", at(12)).find((state) => state.ingredientId === "egg"),
+    { ...testing, status: "paused", testDay: 3 },
+  );
+  assert.equal(applyEditedTrialOutcome(states, "egg", "tasteRejected", at(10)).find((state) => state.ingredientId === "egg")?.status, "rejected");
+
+  for (const outcome of ["accepted", "tasteRejected", "textureDifficulty", "suspectedReaction"] as const) {
+    assert.equal(applyEditedTrialOutcome(suspected, "egg", outcome, at(11)), suspected);
+  }
+  assert.equal(applyEditedTrialOutcome(states, "rice", "suspectedReaction", at(20)), states);
+
+  const created = applyEditedTrialOutcome(states, "tofu", "suspectedReaction", at(15), " ");
+  assert.deepEqual(created.find((state) => state.ingredientId === "tofu"), {
+    ingredientId: "tofu",
+    status: "suspectedReaction",
+    testDay: null,
+    exposureCount: 1,
+    firstOfferedAt: at(15),
+    lastOfferedAt: at(15),
+    acceptedTextureMm: [],
+    lastReaction: "확인 필요",
+  });
+});
+
 test("reproduces the five-group introduction flow over the first fifteen days", () => {
   let states: ChildIngredientState[] = [];
   const opened: string[] = [];
@@ -148,7 +183,7 @@ test("keeps earlier foods while adding only one new ingredient during the initia
   const day4 = createBookBasedDayPlan(
     baseProfile,
     ingredientCatalog,
-    [passed("rice"), { ingredientId: "beef", status: "testing", testDay: 1, exposureCount: 0 }],
+    [passed("rice"), { ingredientId: "beef", status: "testing", testDay: 1, exposureCount: 0, lastOfferedAt: null }],
     [],
     new Date("2026-07-04T12:00:00.000Z"),
   );
@@ -161,7 +196,7 @@ test("keeps earlier foods while adding only one new ingredient during the initia
     [
       passed("rice"),
       passed("beef"),
-      { ingredientId: "cabbage", status: "testing", testDay: 1, exposureCount: 0 },
+      { ingredientId: "cabbage", status: "testing", testDay: 1, exposureCount: 0, lastOfferedAt: null },
     ],
     [],
     new Date("2026-07-07T12:00:00.000Z"),
@@ -359,9 +394,90 @@ test("every stage menu only references ingredients in the app catalog", () => {
   const ingredientIds = new Set(ingredientCatalog.map((ingredient) => ingredient.id));
   const missing = stageMenuCatalog.flatMap((menu) => menu.ingredientIds.filter((id) => !ingredientIds.has(id)));
   assert.deepEqual(missing, []);
+  assert.deepEqual(stageMenuCatalog.filter((menu) => new Set(menu.ingredientIds).size !== menu.ingredientIds.length).map((menu) => menu.id), []);
   assert.ok(stageMenuCatalog.filter((menu) => menu.stage === "middle").length >= 15);
   assert.ok(stageMenuCatalog.filter((menu) => menu.stage === "late").length >= 20);
   assert.ok(stageMenuCatalog.filter((menu) => menu.stage === "completion").length >= 25);
+});
+
+test("book menus list the allergens their recipes use", () => {
+  const menuById = new Map(stageMenuCatalog.map((menu) => [menu.id, menu]));
+  const requiredIds: Record<string, string[]> = {
+    "completion-soft-tofu-soup": ["egg", "shrimp"],
+    "late-egg-zucchini": ["milk"],
+    "late-french-toast": ["milk", "butter"],
+    "late-tofu-veg-ball": ["wheat"],
+    "completion-seaweed-tofu": ["wheat"],
+    "completion-cod-pancake": ["wheat"],
+    "completion-sujebi": ["egg"],
+    "completion-nutrition-rice": ["egg"],
+    "completion-veg-omelet": ["milk"],
+    "completion-chicken-spinach": ["milk"],
+    "completion-beef-cream-soup": ["milk", "butter"],
+    "completion-potato-broccoli-sandwich": ["yogurt", "egg"],
+    "completion-tofu-tomato": ["yogurt"],
+    "late-fruit-yogurt": ["cottage-cheese", "yogurt"],
+  };
+  for (const [menuId, ids] of Object.entries(requiredIds)) {
+    const listed = menuById.get(menuId)?.ingredientIds ?? [];
+    assert.deepEqual(ids.filter((id) => !listed.includes(id)), [], `${menuId} must list ${ids.join(", ")}`);
+  }
+  assert.deepEqual(menuById.get("late-multigrain")?.ingredientIds, ["rice", "brown-rice", "barley", "oatmeal"]);
+  assert.equal(menuById.get("middle-pumpkin-potato")?.sourcePage, "책 p.164");
+  for (const [menuId, title] of [["completion-fish-tofu-ball", "흰살생선두부밥"], ["completion-tofu-potato", "두부감자밥"]] as const) {
+    assert.equal(menuById.get(menuId)?.title, title);
+    assert.equal(menuById.get(menuId)?.kind, "ricePlate");
+    assert.ok(menuById.get(menuId)?.ingredientIds.includes("rice"));
+  }
+
+  const profile: BabyProfile = { ...baseProfile, stage: "completion", ageMonths: 14, mealsPerDay: 3, snacksPerDay: 2, textureMm: 8 };
+  const offersSoftTofuStew = (ids: string[]) => createBookBasedDayPlan(profile, ingredientCatalog, ids.map(passed), [], new Date("2026-08-01T12:00:00.000Z"))
+    .meals.some((meal) => meal.bookReference === "책 p.275");
+  assert.equal(offersSoftTofuStew(["rice", "tofu", "zucchini", "onion"]), false);
+  assert.equal(offersSoftTofuStew(["rice", "tofu", "zucchini", "onion", "egg", "shrimp"]), true);
+});
+
+test("applies the book's stage and food-group corrections to the ingredient catalog", () => {
+  const ingredient = (id: string) => ingredientById.get(id)!;
+  for (const [id, stage, age] of [
+    ["millet", "middle", 7],
+    ["corn", "middle", 7],
+    ["mackerel", "late", 9],
+    ["bell-pepper", "initial", 6],
+    ["blueberry", "initial", 6],
+  ] as const) {
+    assert.equal(ingredient(id).minimumStage, stage, id);
+    assert.equal(ingredient(id).minimumAgeMonths, age, id);
+  }
+  for (const id of ["zucchini", "broccoli"]) {
+    assert.equal(ingredient(id).introductionGroup, "other", id);
+    assert.equal(ingredient(id).foodGroup, "otherVegetable", id);
+  }
+  for (const id of ["sweet-potato", "potato"]) {
+    assert.equal(ingredient(id).introductionGroup, "other", id);
+    assert.equal(ingredient(id).foodGroup, "starchyFood", id);
+  }
+  for (const id of ["strawberry", "tomato"]) {
+    assert.notEqual(ingredient(id).allergen, true, id);
+    assert.match(ingredient(id).bookGuidance ?? "", /알레르기 비슷한 반응/, id);
+  }
+
+  const day = new Date("2026-07-31T12:00:00.000Z");
+  const avoided = (ingredientId: string): ChildIngredientState => ({ ingredientId, status: "avoid", testDay: null, exposureCount: 0, lastOfferedAt: null });
+  assert.equal(chooseNextIngredient(baseProfile, ingredientCatalog, [passed("rice"), passed("beef"), avoided("cabbage"), avoided("bokchoy")], [], day)?.id, "spinach");
+  assert.equal(chooseNextIngredient(baseProfile, ingredientCatalog, [passed("rice"), passed("beef"), passed("cabbage"), avoided("pumpkin")], [], day)?.id, "carrot");
+
+  let states: ChildIngredientState[] = [];
+  const opened: string[] = [];
+  for (let day = 1; day <= 300; day += 1) {
+    const date = new Date(Date.UTC(2026, 6, day, 12));
+    const next = chooseNextIngredient(baseProfile, ingredientCatalog, states, [], date);
+    if (!next) break;
+    if (!opened.includes(next.id)) opened.push(next.id);
+    states = applyTrialOutcome(states, next.id, "accepted", date.toISOString(), 3);
+  }
+  for (const id of ["bell-pepper", "blueberry", "zucchini", "broccoli"]) assert.ok(opened.includes(id), `${id} opens in the initial stage`);
+  for (const id of ["millet", "corn", "mackerel"]) assert.equal(opened.includes(id), false, `${id} must wait for its book stage`);
 });
 
 for (const scenario of [
