@@ -1859,9 +1859,11 @@ function IngredientSheet({
   const guidance = ingredient.id.startsWith("custom-")
     ? "직접 추가한 재료예요. 가족의 계획에 맞춰 도입 시기를 정할 수 있어요."
     : ingredient.bookGuidance ?? "앞선 재료에 적응한 뒤 한 가지씩 열어요.";
-  const preparation = ingredient.preparationConstraints?.join(" · ")
-    ?? ingredient.chokingFormBlacklist?.map((item) => `${item} 제외`).join(" · ")
-    ?? "단계에 맞게 충분히 부드럽게 조리";
+  const preparation = ingredient.preparationConstraints?.length
+    ? ingredient.preparationConstraints.join(" · ")
+    : ingredient.chokingFormBlacklist?.length
+      ? ingredient.chokingFormBlacklist.map((item) => `${item} 제외`).join(" · ")
+      : "단계에 맞게 충분히 부드럽게 조리";
 
   return (
     <div className="sheet-backdrop" role="presentation" onMouseDown={onClose}>
@@ -1881,7 +1883,7 @@ function IngredientSheet({
           <div><dt>조리·안전</dt><dd>{preparation}</dd></div>
           {ingredient.frequencyCap7Days && <div><dt>빈도 제한</dt><dd>최근 7일 최대 {ingredient.frequencyCap7Days}회</dd></div>}
           <div><dt>현재 상태</dt><dd>{state ? ingredientStatusLabels[state.status] : "미도입"}{state?.status === "testing" ? ` · ${state.testDay ?? 1}/3일` : ""}</dd></div>
-          <div><dt>책 근거</dt><dd>{ingredient.sourcePages?.join(" · ") ?? "가족이 직접 추가한 재료"}</dd></div>
+          <div><dt>책 근거</dt><dd>{ingredient.sourcePages?.length ? ingredient.sourcePages.join(" · ") : "가족이 직접 추가한 재료"}</dd></div>
           <div><dt>기록 방법</dt><dd>섭취량, 단순 거부, 질감 어려움, 이상 반응을 각각 나누어 기록해요.</dd></div>
         </dl>
         <section className="ingredient-state-editor" aria-labelledby="ingredient-state-title">
@@ -2191,7 +2193,7 @@ function BabyProfileSheet({
         <form className="profile-form" onSubmit={(event) => void submit(event)}>
           <label className="form-field">
             <span>화면에 보일 이름</span>
-            <input value={nickname} onChange={(event) => setNickname(event.target.value)} placeholder="우리 아기" autoComplete="off" />
+            <input type="text" value={nickname} onChange={(event) => setNickname(event.target.value)} placeholder="우리 아기" autoComplete="off" />
           </label>
           <div className="profile-date-grid">
             <label className="form-field">
