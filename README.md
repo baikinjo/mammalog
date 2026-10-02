@@ -9,16 +9,20 @@
 - 새 재료, 단순 거부, 질감 어려움, 의심 반응을 서로 다른 상태로 저장합니다.
 - 월령뿐 아니라 시작 준비, 먹어본 재료, 최근 빈도, 현재 질감과 먹기 기술을 함께 봅니다.
 - 모든 추천에는 이유, 충족한 목표, 안전 기준과 책 페이지 근거가 있습니다.
+- 오늘 화면은 기록하지 않은 끼니에 기본 추천과 같은 기준을 지키는 다른 메뉴(최대 3가지)를 보여주고, 고른 메뉴를 그대로 가족 기록에 저장합니다. 지금 관찰 중인 재료가 끝난 뒤 더할 재료와 그 재료로 열리는 책 메뉴도 따로 안내합니다.
+- 진행 기록 초기화는 가족 관리자와 보호자 모두 할 수 있습니다. 가족 구성원 연결 해제와 초대는 가족 관리자만 할 수 있습니다.
 
 ## 추천 엔진 구성
 
 - `lib/book-knowledge.ts`: 단계별 수치, 안전·도입·영양·질감·행동·예외 규칙
 - `lib/ingredient-catalog.ts`: 61개 기본 재료와 도입 시기·빈도·조리·질식·출처 메타데이터
-- `lib/recommendation-engine.ts`: 상태 추론, 신규 재료 선택, 하루 식단 조립, 주간 상한, 질감과 발달 과제
-- `tests/recommendation-engine.test.ts`: 도입 15일 시뮬레이션과 안전·빈도·단계 검증
+- `lib/stage-menu-catalog.ts`: 초기~완료기 책 메뉴 템플릿(메뉴 이름·책 페이지·재료 목록)
+- `lib/recommendation-engine.ts`: 상태 추론, 신규 재료 선택, 하루 식단 조립과 끼니별 선택지, 다음에 더할 재료, 주간 상한, 질감과 발달 과제
+- `tests/recommendation-engine.test.ts`: 도입 15일 시뮬레이션과 안전·빈도·단계·선택지 검증
 - `supabase/schema.sql`: 가족 공유를 위한 기본 데이터베이스
 - `supabase/book_engine_v2.sql`: 책 기반 규칙·반응·추천 스냅샷 확장 마이그레이션
 - `supabase/ingredient_catalog_sync.sql`: `lib/ingredient-catalog.ts`의 기본 재료 전체를 `ingredients` 테이블에 맞추는 재실행 가능한 SQL (`pnpm exec tsx scripts/generate-ingredient-catalog-sql.ts`로 생성)
+- `supabase/shared_progress_reset.sql`: 이미 설치된 프로젝트에서 진행 기록 초기화 권한만 가족 관리자·보호자 모두로 넓히는 업그레이드 SQL
 
 ## 로컬 명령
 
@@ -42,6 +46,8 @@ pnpm run build
    5. `supabase/ingredient_catalog_sync.sql`
 
    기존 프로젝트에는 1~4를 다시 실행하지 말고, `lib/ingredient-catalog.ts`의 기본 재료가 바뀔 때마다 `supabase/ingredient_catalog_sync.sql`만 다시 실행하세요. 기본 재료 행만 갱신하고 가족 기록과 직접 추가한 재료는 건드리지 않으며, 마지막 조회 결과가 기본 재료 수(현재 61)와 같으면 완료입니다.
+
+   이전 버전의 `supabase/data_controls.sql`을 이미 실행한 프로젝트는 **SQL Editor**에서 `supabase/shared_progress_reset.sql`을 한 번 실행하세요. `reset_child_progress` 함수만 교체해 가족 관리자와 보호자 모두 자기 가족 아이의 진행 기록을 초기화할 수 있게 하며, 실행 자체로는 어떤 기록도 지우거나 바꾸지 않습니다. 가족 구성원 연결 해제·계정 삭제·초대 권한은 그대로입니다. 마지막 조회 결과의 `uses_family_member_check`가 `true`이면 완료입니다. 새 프로젝트는 4번 파일에 이미 포함되어 있어 따로 실행하지 않아도 됩니다.
 3. **Project Settings → API Keys**에서 Project URL과 publishable key(레거시 프로젝트에서는 anon key)를 확인합니다. 앱에서 사용하는 값은 브라우저에 노출되는 공개 키여야 합니다. `service_role` 또는 `sb_secret_` 키는 절대 사용하지 마세요.
 4. `C:\src\mammalog\.env.local` 파일을 만들고 다음 값을 입력합니다. `.env.local`은 Git에서 제외됩니다.
 

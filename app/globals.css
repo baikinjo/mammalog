@@ -484,18 +484,31 @@ button {
 .meal-card-head { align-items: flex-start; }
 .meal-card-head > div { min-width: 0; }
 
-.swap-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 11px;
+.meal-options { display: grid; gap: 8px; margin-top: 16px; }
+.meal-options-label { margin: 0 0 2px; color: var(--ink-soft); font-size: 10px; line-height: 1.55; }
+.meal-options > button {
+  display: grid;
+  min-height: 44px;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  padding: 11px 12px;
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: 15px;
   background: transparent;
-  color: var(--ink-soft);
-  font-size: 11px;
+  color: var(--ink);
+  text-align: left;
   cursor: pointer;
 }
+.meal-options > button.is-selected { border-color: rgba(80, 102, 78, 0.45); background: rgba(223, 232, 217, 0.55); }
+.meal-options > button > span:last-child { display: grid; min-width: 0; gap: 4px; }
+.meal-options strong { font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.meal-options small { color: var(--ink-soft); font-size: 10px; line-height: 1.55; overflow-wrap: anywhere; }
+.meal-option-mark { display: grid; width: 22px; height: 22px; place-items: center; border: 1px solid var(--line); border-radius: 50%; background: var(--paper); color: white; }
+.meal-options > button.is-selected .meal-option-mark { border-color: var(--sage-deep); background: var(--sage-deep); }
+.meal-option-notice { display: flex; align-items: center; gap: 10px; margin-top: 14px; padding: 11px 12px; border-radius: 14px; background: rgba(245, 223, 207, 0.72); color: #85583d; }
+.meal-option-notice p { flex: 1; min-width: 0; margin: 0; font-size: 11px; line-height: 1.6; }
+.meal-option-notice button { min-height: 44px; flex: 0 0 auto; padding: 0 12px; border: 1px solid rgba(133, 88, 61, 0.35); border-radius: 12px; background: var(--paper); color: #85583d; font-size: 10px; font-weight: 700; cursor: pointer; }
 
 .ingredient-chips {
   display: flex;
@@ -591,6 +604,14 @@ button {
 .development-note > svg { flex: 0 0 auto; margin-top: 2px; }
 .development-note p { margin: 0; color: var(--ink-soft); font-size: 11px; line-height: 1.65; }
 .development-note strong { color: var(--sage-deep); }
+.next-additions-note { margin: 12px 0 0; color: var(--ink-soft); font-size: 11px; line-height: 1.65; }
+.next-additions-list { display: grid; gap: 8px; margin: 14px 0 0; padding: 0; list-style: none; }
+.next-additions-list li { display: flex; align-items: flex-start; gap: 10px; padding: 12px; border-radius: 15px; background: var(--canvas); }
+.next-additions-list .ingredient-visual { background: var(--paper); }
+.next-additions-list p { display: grid; min-width: 0; gap: 4px; margin: 0; }
+.next-additions-list strong { font-size: 12px; overflow-wrap: anywhere; }
+.next-additions-list strong span { display: inline-block; margin-left: 4px; padding: 2px 7px; border-radius: 999px; background: var(--paper); color: var(--sage-deep); font-size: 9px; font-weight: 700; white-space: nowrap; }
+.next-additions-list small { color: var(--ink-soft); font-size: 10px; line-height: 1.6; overflow-wrap: anywhere; }
 .daily-schedule-list { display: grid; margin-top: 18px; border-block: 1px solid var(--line); }
 .daily-schedule-list > button,
 .schedule-snack { display: grid; min-height: 72px; grid-template-columns: 78px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 12px 2px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--ink); text-align: left; }
@@ -962,6 +983,9 @@ button {
 }
 
 .compact-sheet { padding-bottom: max(30px, env(safe-area-inset-bottom)); }
+.record-sheet-meal { display: grid; gap: 4px; margin: 0 0 16px; padding: 12px 14px; border-radius: 15px; background: var(--canvas); }
+.record-sheet-meal strong { font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
+.record-sheet-meal small { color: var(--ink-soft); font-size: 11px; line-height: 1.55; overflow-wrap: anywhere; }
 .ingredient-sheet-title { display: flex; align-items: center; gap: 12px; }
 .ingredient-sheet-title > div { min-width: 0; }
 .ingredient-sheet-title h2 { margin-top: 3px; overflow-wrap: anywhere; }

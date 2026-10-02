@@ -206,16 +206,56 @@ export interface MealPlanItem {
 export interface PlannedMeal {
   index: number;
   type: "meal" | "snack";
+  /**
+   * Stable id of this composition; the same inputs always produce the same id. Recorded meals use
+   * `recorded:<index>` and meals with no safe food to offer use `hold:<index>`.
+   */
+  optionId: string;
   time: string;
   title: string;
   items: MealPlanItem[];
   servingGuide: string;
   textureGuide: string;
+  /** Left out only for a recorded meal whose record never stored a texture. */
+  textureMm?: number;
   servingMode: string;
   preparationSteps: string[];
   storageGuide: string;
   reasons: string[];
   bookReference?: string;
+  /** Other eligible compositions for the same meal, ranked after this default. */
+  alternatives?: PlannedMeal[];
+}
+
+/**
+ * A meal already recorded for the plan date, so the rest of the day is planned around it. The optional fields are
+ * what the record stored; the plan shows them as they are and leaves out anything an older record never stored.
+ */
+export interface RecordedMeal {
+  index: number;
+  ingredientIds: string[];
+  newExposureIngredientId?: string | null;
+  reaction?: MealHistoryEntry["reaction"];
+  title?: string;
+  time?: string;
+  textureMm?: number | null;
+  servingGuide?: string | null;
+  textureGuide?: string | null;
+  servingMode?: string | null;
+  reasons?: string[];
+}
+
+export interface BookMenuPreview {
+  menuId: string;
+  title: string;
+  sourcePage: string;
+  ingredientIds: string[];
+}
+
+/** An ingredient that could be introduced after the current observation and the book menus it would open. */
+export interface NextAddition {
+  ingredient: IngredientDefinition;
+  unlocks: BookMenuPreview[];
 }
 
 export interface DailyRoutineLog {
@@ -274,5 +314,6 @@ export interface DailyRecommendation {
   safetyNotes: string[];
   developmentTask: string;
   summaryReasons: string[];
+  nextAdditions: NextAddition[];
   recommendationVersion: string;
 }

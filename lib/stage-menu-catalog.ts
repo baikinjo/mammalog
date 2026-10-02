@@ -12,7 +12,7 @@ export type MenuKind =
 
 export interface StageMenuTemplate {
   id: string;
-  stage: Exclude<WeaningStage, "prestart" | "initial">;
+  stage: Exclude<WeaningStage, "prestart">;
   title: string;
   ingredientIds: string[];
   kind: MenuKind;
@@ -33,6 +33,25 @@ function menu(
 }
 
 export const stageMenuCatalog: StageMenuTemplate[] = [
+  // 초기 6개월: 책의 초기 레시피 중 재료 목록을 직접 확인한 죽. 물·육수는 제외하고 모든 재료를 나열합니다.
+  menu("initial-rice", "initial", "쌀죽", ["rice"], "porridge", "섞은 죽", "책 p.70"),
+  menu("initial-rice-oatmeal", "initial", "오트밀쌀죽", ["rice", "oatmeal"], "porridge", "섞은 죽", "책 p.72"),
+  menu("initial-beef", "initial", "소고기죽", ["rice", "beef"], "porridge", "섞은 죽", "책 p.75"),
+  menu("initial-cabbage-zucchini", "initial", "양배추애호박죽", ["rice", "oatmeal", "cabbage", "zucchini"], "porridge", "섞은 죽", "책 p.79"),
+  menu("initial-bokchoy-carrot", "initial", "청경채당근죽", ["rice", "bokchoy", "carrot"], "porridge", "섞은 죽", "책 p.82"),
+  menu("initial-broccoli-carrot", "initial", "브로콜리당근죽", ["rice", "oatmeal", "broccoli", "carrot"], "porridge", "섞은 죽", "책 p.89"),
+  menu("initial-sweetpotato-cabbage", "initial", "고구마양배추죽", ["rice", "sweet-potato", "cabbage"], "porridge", "섞은 죽", "책 p.90"),
+  menu("initial-rice-three-veg", "initial", "쌀죽과 삼색 채소 반찬", ["rice", "cabbage", "bokchoy", "carrot"], "toppings", "죽과 반찬을 분리 제공", "책 p.70·p.91"),
+  menu("initial-egg-carrot", "initial", "달걀당근죽", ["rice", "carrot", "egg"], "porridge", "토핑을 올린 죽", "책 p.92~93"),
+  menu("initial-chicken", "initial", "닭고기죽", ["rice", "chicken"], "porridge", "섞은 죽", "책 p.94"),
+  menu("initial-beef-cabbage-pumpkin", "initial", "소고기양배추단호박죽", ["rice", "beef", "cabbage", "pumpkin"], "porridge", "섞은 죽", "책 p.100"),
+  menu("initial-beef-cabbage", "initial", "소고기양배추죽", ["rice", "beef", "cabbage"], "porridge", "섞은 죽", "책 p.101"),
+  menu("initial-apple", "initial", "사과죽", ["rice", "apple"], "porridge", "섞은 죽", "책 p.103"),
+  menu("initial-wheat-rice", "initial", "밀가루쌀죽", ["rice", "wheat"], "porridge", "섞은 죽", "책 p.104"),
+  menu("initial-spinach", "initial", "시금치죽", ["rice", "spinach"], "porridge", "섞은 죽", "책 p.106"),
+  menu("initial-cabbage-pumpkin", "initial", "양배추단호박죽", ["rice", "cabbage", "pumpkin"], "porridge", "섞은 죽", "책 p.110"),
+  menu("initial-pea-pumpkin", "initial", "완두콩단호박죽", ["rice", "pumpkin", "green-pea"], "porridge", "섞은 죽", "책 p.123"),
+  menu("initial-beef-broccoli", "initial", "소고기브로콜리죽", ["rice", "beef", "broccoli"], "porridge", "섞은 죽", "책 p.124"),
   // 중기 7~8개월: 죽과 토핑을 함께 쓰고, 으깬 반찬과 핑거푸드를 병행합니다.
   menu("middle-rice-three-veg", "middle", "쌀죽과 삼색 채소 반찬", ["rice", "cabbage", "bokchoy", "carrot"], "toppings", "죽과 반찬을 분리 제공", "책 p.142~143"),
   menu("middle-oat-chicken", "middle", "오트밀죽과 닭고기 반찬", ["oatmeal", "chicken"], "toppings", "죽과 반찬을 분리 제공", "책 p.144~145"),
@@ -109,7 +128,7 @@ export const stageMenuCatalog: StageMenuTemplate[] = [
 ];
 
 export function menusForStage(stage: Exclude<WeaningStage, "prestart">): StageMenuTemplate[] {
-  return stage === "initial" ? [] : stageMenuCatalog.filter((item) => item.stage === stage);
+  return stageMenuCatalog.filter((item) => item.stage === stage);
 }
 
 export function menuInstruction(kind: MenuKind, textureMm: number): string {

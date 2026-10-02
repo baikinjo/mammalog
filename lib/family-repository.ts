@@ -38,6 +38,11 @@ export interface FamilyMealRecord {
   reaction: FamilyMealReaction;
   note: string;
   textureMm: number | null;
+  /** Stored with the meal; null when an older record never stored it. */
+  servingGuide: string | null;
+  textureGuide: string | null;
+  servingMode: string | null;
+  recommendationReasons: string[];
   recordedBy: string;
   recordedAt: string;
 }
@@ -58,6 +63,7 @@ export interface SaveFamilyMealInput {
   textureMm: number;
   servingGuide: string;
   textureGuide: string;
+  servingMode: string;
   recommendationReasons: string[];
 }
 
@@ -91,9 +97,16 @@ interface CompletedMealPlanRow {
   planned_time: string;
   title: string;
   texture_mm: number | null;
+  serving_guide?: string | null;
+  texture_guide?: string | null;
+  serving_mode?: string | null;
+  recommendation_reasons?: unknown;
   meal_plan_items?: MealPlanItemRow[] | null;
   meal_logs?: MealLogRow | MealLogRow[] | null;
 }
+
+// Older saves wrote this placeholder for every meal instead of the serving style the family saw.
+const LEGACY_SERVING_MODE = "mixed";
 
 interface ChildRow {
   id: string;
@@ -583,10 +596,22 @@ export async function saveDailyRecommendation(
   if (error) throw error;
 }
 
+/** The day snapshot saved with the latest record of that date, or null when none was stored. */
+export async function loadDailyRecommendation(childId: string, date: string): Promise<DailyRecommendation | null> {
+  const { data, error } = await getSupabaseClient()
+    .from("daily_recommendations")
+    .select("output_snapshot")
+    .eq("child_id", childId)
+    .eq("recommendation_date", date)
+    .maybeSingle();
+  if (error) throw error;
+  return (data?.output_snapshot as DailyRecommendation | undefined) ?? null;
+}
+
 export async function loadFamilyMealRecords(childId: string): Promise<FamilyMealRecord[]> {
   const { data, error } = await getSupabaseClient()
     .from("meal_plans")
-    .select("id,meal_date,meal_index,planned_time,title,texture_mm,meal_plan_items(ingredient_id,is_new_exposure),meal_logs(id,completion,reaction,note,recorded_by,recorded_at)")
+    .select("id,meal_date,meal_index,planned_time,title,texture_mm,serving_guide,texture_guide,serving_mode,recommendation_reasons,meal_plan_items(ingredient_id,is_new_exposure),meal_logs(id,completion,reaction,note,recorded_by,recorded_at)")
     .eq("child_id", childId)
     .eq("status", "completed")
     .order("meal_date", { ascending: false });
@@ -608,6 +633,12 @@ export async function loadFamilyMealRecords(childId: string): Promise<FamilyMeal
       reaction: log.reaction,
       note: log.note ?? "",
       textureMm: plan.texture_mm,
+      servingGuide: plan.serving_guide ?? null,
+      textureGuide: plan.texture_guide ?? null,
+      servingMode: plan.serving_mode && plan.serving_mode !== LEGACY_SERVING_MODE ? plan.serving_mode : null,
+      recommendationReasons: Array.isArray(plan.recommendation_reasons)
+        ? plan.recommendation_reasons.filter((reason): reason is string => typeof reason === "string")
+        : [],
       recordedBy: log.recorded_by,
       recordedAt: log.recorded_at,
     } satisfies FamilyMealRecord];
@@ -653,7 +684,7 @@ export async function saveFamilyMealRecord(input: SaveFamilyMealInput): Promise<
       recommendation_reasons: input.recommendationReasons,
       stage: input.stage,
       texture_mm: input.textureMm,
-      serving_mode: "mixed",
+      serving_mode: input.servingMode,
       locked_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     }, { onConflict: "child_id,meal_date,meal_index" })

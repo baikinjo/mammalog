@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  loadDailyRecommendation,
   loadFamilyMealRecords,
   saveFamilyMealRecord,
   signInFamilyAnonymously,
@@ -67,6 +68,7 @@ const mealInput: SaveFamilyMealInput = {
   textureMm: 2,
   servingGuide: "",
   textureGuide: "",
+  servingMode: "토핑을 올린 죽",
   recommendationReasons: [],
 };
 
@@ -104,6 +106,7 @@ test("meal save writes new items before deleting only the previous rows", async 
   ]);
   const insertedItems = calls[2].body as Array<{ ingredient_id: string; is_new_exposure: boolean }>;
   assert.deepEqual(insertedItems.map((item) => item.is_new_exposure), [false, false, false]);
+  assert.equal((calls[1].body as { serving_mode: string }).serving_mode, "토핑을 올린 죽", "the chosen serving style is stored");
 
   calls.length = 0;
   route = replyTo(["old-1", "old-2"], 409);
@@ -120,26 +123,51 @@ test("meal save writes new items before deleting only the previous rows", async 
   assert.deepEqual(flagged, ["spinach"]);
 });
 
-test("loaded meal records expose the ingredient the meal introduced", async () => {
+test("loaded meal records expose the ingredient the meal introduced and what the meal stored", async () => {
+  const row = {
+    id: "plan-1",
+    meal_date: "2026-09-01",
+    meal_index: 1,
+    planned_time: "10:00:00",
+    title: "소고기시금치죽",
+    texture_mm: 2,
+    serving_guide: "30~100g 범위에서 아이가 먹는 만큼",
+    texture_guide: "2mm 안팎",
+    serving_mode: "토핑을 올린 죽",
+    recommendation_reasons: ["시금치 1/3일차예요."],
+    meal_plan_items: [
+      { ingredient_id: "rice", is_new_exposure: false },
+      { ingredient_id: "spinach", is_new_exposure: true },
+    ],
+    meal_logs: [{ id: "log-1", completion: "half", reaction: "none", note: null, recorded_by: "user-123", recorded_at: "2026-09-01T17:00:00+00:00" }],
+  };
   route = () => ({
     status: 200,
-    body: [{
-      id: "plan-1",
-      meal_date: "2026-09-01",
-      meal_index: 1,
-      planned_time: "10:00:00",
-      title: "소고기시금치죽",
-      texture_mm: 2,
-      meal_plan_items: [
-        { ingredient_id: "rice", is_new_exposure: false },
-        { ingredient_id: "spinach", is_new_exposure: true },
-      ],
-      meal_logs: [{ id: "log-1", completion: "half", reaction: "none", note: null, recorded_by: "user-123", recorded_at: "2026-09-01T17:00:00+00:00" }],
-    }],
+    body: [row, { ...row, id: "plan-0", meal_date: "2026-08-31", serving_guide: null, texture_guide: null, serving_mode: "mixed", recommendation_reasons: [] }],
   });
-  const [record] = await loadFamilyMealRecords("child-1");
+  const [record, legacy] = await loadFamilyMealRecords("child-1");
   assert.deepEqual(record.ingredientIds, ["rice", "spinach"]);
   assert.equal(record.newExposureIngredientId, "spinach");
+  assert.deepEqual(
+    [record.servingGuide, record.textureGuide, record.servingMode, record.recommendationReasons],
+    ["30~100g 범위에서 아이가 먹는 만큼", "2mm 안팎", "토핑을 올린 죽", ["시금치 1/3일차예요."]],
+  );
+  // Older saves stored a "mixed" placeholder rather than the serving style that was shown.
+  assert.deepEqual([legacy.servingGuide, legacy.textureGuide, legacy.servingMode, legacy.recommendationReasons], [null, null, null, []]);
+});
+
+test("loads the stored day snapshot for one child and date", async () => {
+  await signInFamilyAnonymously();
+  calls.length = 0;
+  const snapshot = { date: "2026-09-01", meals: [{ index: 1, title: "달걀당근죽" }] };
+  route = (call) => ({ status: 200, body: call.path === "daily_recommendations" ? [{ output_snapshot: snapshot }] : [] });
+  assert.deepEqual(await loadDailyRecommendation("child-1", "2026-09-01"), snapshot);
+  assert.equal(calls[0].path, "daily_recommendations");
+  assert.match(calls[0].query, /child_id=eq\.child-1/);
+  assert.match(calls[0].query, /recommendation_date=eq\.2026-09-01/);
+
+  route = () => ({ status: 200, body: [] });
+  assert.equal(await loadDailyRecommendation("child-1", "2026-09-02"), null);
 });
 
 test("editing a meal record only updates its log and keeps the stored meal", async () => {

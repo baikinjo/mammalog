@@ -20,6 +20,25 @@ test("daily routine migration is shared safely and included in progress reset", 
   assert.match(controlsSql, /delete from public\.daily_routine_logs where child_id = target_child_id/);
 });
 
+test("the shared progress reset upgrade replaces only the canonical reset function", () => {
+  const resetFunction = (sql: string) => {
+    const start = sql.indexOf("create or replace function public.reset_child_progress");
+    return start < 0 ? "" : sql.slice(start, sql.indexOf("$$;", start) + 3);
+  };
+  const upgradeSql = readRepoFile("supabase/shared_progress_reset.sql");
+  const canonical = resetFunction(readRepoFile("supabase/data_controls.sql"));
+  assert.notEqual(canonical, "");
+  assert.equal(resetFunction(upgradeSql), canonical, "shared_progress_reset.sql must match data_controls.sql");
+  assert.match(canonical, /if auth\.uid\(\) is null then/);
+  assert.match(canonical, /if not public\.can_access_child\(target_child_id\) then/);
+  assert.doesNotMatch(canonical, /owner_id/);
+  assert.deepEqual(
+    [...upgradeSql.matchAll(/^(create|revoke|grant|delete|update|insert|drop|alter|select)\b/gm)].map((match) => match[1]),
+    ["create", "revoke", "grant", "select"],
+  );
+  assert.match(readRepoFile("README.md"), /supabase\/shared_progress_reset\.sql/);
+});
+
 test("ingredient catalog sync SQL seeds every catalog id into every ingredients column", () => {
   const syncSql = readRepoFile("supabase/ingredient_catalog_sync.sql");
   assert.equal(

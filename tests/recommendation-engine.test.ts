@@ -3,6 +3,7 @@ import test from "node:test";
 import { ingredientById, ingredientCatalog } from "../lib/ingredient-catalog";
 import {
   applyEditedTrialOutcome,
+  applyRepeatedTrialReaction,
   applyTrialOutcome,
   chooseNextIngredient,
   countRecentFish,
@@ -10,12 +11,16 @@ import {
   createInitialMealSuggestion,
   hasStartReadiness,
   inferWeaningStage,
+  isHeldMeal,
+  mealOptions,
   resolveMealTimes,
 } from "../lib/recommendation-engine";
 import type {
   BabyProfile,
   ChildIngredientState,
+  DailyRecommendation,
   MealHistoryEntry,
+  PlannedMeal,
 } from "../lib/domain";
 import { stageMenuCatalog } from "../lib/stage-menu-catalog";
 
@@ -41,6 +46,19 @@ function passed(ingredientId: string): ChildIngredientState {
     lastOfferedAt: "2026-07-20T10:00:00.000Z",
   };
 }
+
+function testing(ingredientId: string, testDay = 1): ChildIngredientState {
+  return {
+    ingredientId,
+    status: "testing",
+    testDay,
+    exposureCount: testDay - 1,
+    lastOfferedAt: testDay > 1 ? "2026-07-30T10:00:00.000Z" : null,
+  };
+}
+
+const optionIds = (meal: PlannedMeal) => meal.items.map((item) => item.ingredient.id);
+const hasGroup = (meal: PlannedMeal, group: string) => meal.items.some((item) => item.ingredient.foodGroup === group);
 
 test("does not mark a four-month-old as ready to start", () => {
   const profile: BabyProfile = {
@@ -519,4 +537,446 @@ test("adds one new trial to a late-stage menu without dropping the existing dish
   assert.equal(newItems[0].ingredient.id, "kiwi");
   assert.match(plan.meals[0].title, /키위 도입/);
   assert.ok(plan.meals[0].items.length > 1);
+});
+
+test("initial book menus list every ingredient from their verified recipe pages", () => {
+  const expected: Record<string, [string, string[]]> = {
+    "initial-rice": ["책 p.70", ["rice"]],
+    "initial-rice-oatmeal": ["책 p.72", ["rice", "oatmeal"]],
+    "initial-beef": ["책 p.75", ["rice", "beef"]],
+    "initial-cabbage-zucchini": ["책 p.79", ["rice", "oatmeal", "cabbage", "zucchini"]],
+    "initial-bokchoy-carrot": ["책 p.82", ["rice", "bokchoy", "carrot"]],
+    "initial-broccoli-carrot": ["책 p.89", ["rice", "oatmeal", "broccoli", "carrot"]],
+    "initial-sweetpotato-cabbage": ["책 p.90", ["rice", "sweet-potato", "cabbage"]],
+    "initial-rice-three-veg": ["책 p.70·p.91", ["rice", "cabbage", "bokchoy", "carrot"]],
+    "initial-egg-carrot": ["책 p.92~93", ["rice", "carrot", "egg"]],
+    "initial-chicken": ["책 p.94", ["rice", "chicken"]],
+    "initial-beef-cabbage-pumpkin": ["책 p.100", ["rice", "beef", "cabbage", "pumpkin"]],
+    "initial-beef-cabbage": ["책 p.101", ["rice", "beef", "cabbage"]],
+    "initial-apple": ["책 p.103", ["rice", "apple"]],
+    "initial-wheat-rice": ["책 p.104", ["rice", "wheat"]],
+    "initial-spinach": ["책 p.106", ["rice", "spinach"]],
+    "initial-cabbage-pumpkin": ["책 p.110", ["rice", "cabbage", "pumpkin"]],
+    "initial-pea-pumpkin": ["책 p.123", ["rice", "pumpkin", "green-pea"]],
+    "initial-beef-broccoli": ["책 p.124", ["rice", "beef", "broccoli"]],
+  };
+  const initialMenus = stageMenuCatalog.filter((menu) => menu.stage === "initial");
+  assert.deepEqual(initialMenus.map((menu) => menu.id).sort(), Object.keys(expected).sort());
+  for (const menu of initialMenus) {
+    const [page, ingredientIds] = expected[menu.id];
+    assert.equal(menu.sourcePage, page, menu.id);
+    assert.deepEqual([...menu.ingredientIds].sort(), [...ingredientIds].sort(), menu.id);
+    assert.ok(menu.ingredientIds.every((id) => ingredientById.get(id)?.minimumStage === "initial"), menu.id);
+  }
+});
+
+test("does not fake variety when only one safe composition exists", () => {
+  const date = new Date("2026-07-01T09:00:00.000Z");
+  const day1 = createBookBasedDayPlan({ ...baseProfile, mealsPerDay: 2 }, ingredientCatalog, [], [], date, []);
+  assert.deepEqual(
+    day1.meals.flatMap((meal) => mealOptions(meal).map((option) => [option.index, option.title, option.bookReference, optionIds(option)])),
+    [[1, "쌀죽", "책 p.70", ["rice"]], [2, "쌀죽", "책 p.70", ["rice"]]],
+    "both meals serve the same rice, each with a single option",
+  );
+  assert.deepEqual(day1.meals.map((meal) => meal.items.filter((item) => item.isNewExposure).map((item) => item.ingredient.id)), [["rice"], []]);
+
+  const cabbageDay = createBookBasedDayPlan(baseProfile, ingredientCatalog, [passed("rice"), passed("beef"), testing("cabbage")], [], date, []);
+  assert.deepEqual(mealOptions(cabbageDay.meals[0]).map((meal) => [meal.title, meal.bookReference]), [["소고기양배추죽", "책 p.101"]]);
+
+  const pumpkinDay = createBookBasedDayPlan(baseProfile, ingredientCatalog, [passed("rice"), passed("beef"), passed("cabbage"), testing("pumpkin")], [], date, []);
+  assert.deepEqual(mealOptions(pumpkinDay.meals[0]).map((meal) => [meal.title, meal.bookReference]), [["소고기양배추단호박죽", "책 p.100"]]);
+  assert.ok(pumpkinDay.meals[0].preparationSteps.some((step) => step.startsWith("새 재료 단호박: 메뉴에 들어가는 재료라")));
+});
+
+test("rotates the default initial menu by what was actually served", () => {
+  const states = [
+    ...["rice", "oatmeal", "beef", "cabbage", "bokchoy", "pumpkin", "carrot", "zucchini", "broccoli", "apple", "wheat"].map(passed),
+    testing("egg", 2),
+  ];
+  const history: MealHistoryEntry[] = [];
+  const served: string[] = [];
+  for (let day = 3; day <= 6; day += 1) {
+    const date = new Date(2026, 7, day, 9);
+    const plan = createBookBasedDayPlan(baseProfile, ingredientCatalog, states, history, date, []);
+    const repeated = createBookBasedDayPlan(baseProfile, ingredientCatalog, states, history, date, []);
+    assert.deepEqual(mealOptions(repeated.meals[0]).map((meal) => meal.optionId), mealOptions(plan.meals[0]).map((meal) => meal.optionId));
+    assert.ok(mealOptions(plan.meals[0]).length >= 2, `day ${day} offers alternatives`);
+    const meal = plan.meals[0];
+    served.push(optionIds(meal).sort().join("+"));
+    history.push({ servedAt: new Date(2026, 7, day, 10).toISOString(), ingredientIds: optionIds(meal), completion: "half", mealType: "meal" });
+  }
+  assert.notEqual(served[0], served[1]);
+  assert.ok(new Set(served).size >= 3, `defaults rotate by composition: ${served.join(" | ")}`);
+});
+
+test("every alternative keeps the one current trial, the daily food groups and only familiar foods", () => {
+  const familiar = ["rice", "oatmeal", "beef", "pork", "cabbage", "bokchoy", "pumpkin", "carrot", "zucchini", "apple", "wheat", "egg"];
+  const plan = createBookBasedDayPlan(
+    { ...baseProfile, mealsPerDay: 2 },
+    ingredientCatalog,
+    [...familiar.map(passed), testing("broccoli", 2)],
+    [],
+    new Date("2026-08-03T09:00:00.000Z"),
+    [],
+  );
+  assert.equal(plan.currentTrial?.id, "broccoli");
+  const [first, second] = plan.meals;
+  const firstOptions = mealOptions(first);
+  assert.ok(firstOptions.length >= 2);
+  const compositions = firstOptions.map((option) => optionIds(option).sort().join("+"));
+  assert.equal(new Set(compositions).size, compositions.length, "alternatives are different compositions, not new titles");
+  for (const option of firstOptions) {
+    assert.deepEqual(option.items.filter((item) => item.isNewExposure).map((item) => item.ingredient.id), ["broccoli"], option.title);
+    assert.ok(optionIds(option).every((id) => familiar.includes(id) || id === "broccoli"), option.title);
+    for (const group of ["redMeat", "leafyVegetable", "yellowVegetable"]) assert.ok(hasGroup(option, group), `${option.title}: ${group}`);
+    assert.ok(optionIds(option).includes("rice") || optionIds(option).includes("oatmeal"), option.title);
+    const menu = stageMenuCatalog.find((item) => option.optionId.startsWith(`${item.id}:`));
+    if (menu) {
+      assert.ok(menu.ingredientIds.every((id) => optionIds(option).includes(id)), `${option.title} keeps every book ingredient`);
+      assert.ok(option.title.startsWith(menu.title), option.title);
+      assert.equal(option.bookReference, menu.sourcePage);
+      if (!menu.ingredientIds.includes("broccoli")) assert.match(option.title, /\+ 브로콜리 도입$/);
+    }
+  }
+  for (const option of mealOptions(second)) {
+    assert.ok(option.items.every((item) => !item.isNewExposure), option.title);
+    assert.equal(optionIds(option).includes("broccoli"), false, "the trial food stays in its first-meal slot");
+  }
+});
+
+test("labels a trial food as a separate addition unless the book recipe already contains it", () => {
+  const date = new Date("2026-07-14T09:00:00.000Z");
+  const fruitTrial = createBookBasedDayPlan(baseProfile, ingredientCatalog, [...["rice", "beef", "cabbage", "pumpkin"].map(passed), testing("apple", 2)], [], date, []);
+  assert.equal(fruitTrial.meals[0].title, "소고기양배추단호박죽 + 사과 도입");
+  assert.ok(fruitTrial.meals[0].preparationSteps.some((step) => step.startsWith("새 재료 사과: 죽에 섞지 말고")));
+
+  const wheatTrial = createBookBasedDayPlan(baseProfile, ingredientCatalog, ["rice", "beef", "cabbage", "pumpkin", "apple"].map(passed), [], date, []);
+  assert.equal(wheatTrial.currentTrial?.id, "wheat");
+  for (const option of mealOptions(wheatTrial.meals[0])) {
+    assert.ok(optionIds(option).includes("rice"), option.title);
+    if (!option.optionId.startsWith("initial-wheat-rice:")) {
+      assert.match(option.title, /\+ 밀 도입$/);
+      assert.ok(option.preparationSteps.some((step) => step.startsWith("새 재료 밀: 익숙한 죽을 끓일 때 소량만 섞어")), option.title);
+    }
+  }
+
+  const peanutTrial = createBookBasedDayPlan(baseProfile, ingredientCatalog, [...["rice", "beef", "cabbage", "pumpkin", "apple"].map(passed), testing("peanut-butter", 2)], [], date, []);
+  for (const option of mealOptions(peanutTrial.meals[0])) {
+    assert.ok(option.preparationSteps.includes("재료별 안전: 뜨거운 물에 충분히 풀기"), `${option.title} keeps the trial's own safety step`);
+    assert.ok(option.preparationSteps.includes("재료별 안전: 100% 제품"), option.title);
+  }
+});
+
+test("never makes wheat the only grain of a meal", () => {
+  for (const [stage, ageMonths] of [["initial", 6], ["completion", 14]] as const) {
+    const familiar = stage === "initial"
+      ? ["wheat", "rice", "beef", "cabbage", "pumpkin", "apple", "egg"]
+      : ingredientCatalog.map((ingredient) => ingredient.id);
+    for (let day = 1; day <= 21; day += 1) {
+      const plan = createBookBasedDayPlan(
+        { ...baseProfile, stage, ageMonths, mealsPerDay: 3, snacksPerDay: 0 },
+        ingredientCatalog,
+        familiar.map(passed),
+        [],
+        new Date(2026, 7, day, 9),
+        [],
+      );
+      for (const option of plan.meals.flatMap(mealOptions)) {
+        if (!optionIds(option).includes("wheat")) continue;
+        assert.ok(
+          option.items.some((item) => ["grain", "starchyFood"].includes(item.ingredient.foodGroup ?? "") && item.ingredient.id !== "wheat"),
+          `${stage} day ${day}: ${option.title}`,
+        );
+      }
+    }
+  }
+});
+
+test("every option respects reaction, stage and temporary-condition blocks", () => {
+  const states: ChildIngredientState[] = [
+    ...["rice", "oatmeal", "beef", "cabbage", "bokchoy", "pumpkin", "carrot", "sweet-potato", "apple", "millet", "corn"].map(passed),
+    { ingredientId: "broccoli", status: "suspectedReaction", testDay: null, exposureCount: 1, lastOfferedAt: "2026-07-30T10:00:00.000Z", lastReaction: "두드러기" },
+    { ingredientId: "zucchini", status: "avoid", testDay: null, exposureCount: 0, lastOfferedAt: null },
+  ];
+  for (const condition of ["none", "diarrhea", "mouthPain"] as const) {
+    const plan = createBookBasedDayPlan(
+      { ...baseProfile, mealsPerDay: 2, temporaryCondition: condition },
+      ingredientCatalog,
+      states,
+      [],
+      new Date("2026-08-03T09:00:00.000Z"),
+      [],
+    );
+    const offered = new Set(plan.meals.flatMap(mealOptions).flatMap(optionIds));
+    for (const blocked of ["broccoli", "zucchini", "millet", "corn"]) assert.equal(offered.has(blocked), false, `${condition}: ${blocked}`);
+    if (condition === "diarrhea") assert.equal(offered.has("apple") || offered.has("sweet-potato"), false);
+    if (condition === "mouthPain") assert.equal(offered.has("apple"), false);
+    for (const { ingredient } of plan.nextAdditions) {
+      assert.equal(["broccoli", "zucchini"].includes(ingredient.id), false, `${condition}: next ${ingredient.id}`);
+      assert.equal(ingredient.minimumStage, "initial", ingredient.id);
+      if (condition === "mouthPain") assert.equal(ingredient.tags?.includes("acidic") ?? false, false, ingredient.id);
+      if (condition === "diarrhea") assert.ok(!ingredient.tags?.includes("sweet") && ingredient.foodGroup !== "fat", ingredient.id);
+    }
+  }
+});
+
+test("plans the rest of the day around recorded meals for fish and daily red meat", () => {
+  const profile: BabyProfile = { ...baseProfile, stage: "middle", ageMonths: 8, mealsPerDay: 3, snacksPerDay: 0, textureMm: 3 };
+  const states = ["rice", "oatmeal", "beef", "pork", "chicken", "cabbage", "bokchoy", "pumpkin", "carrot", "potato", "onion", "whitefish", "tofu", "zucchini"].map(passed);
+  const now = new Date(2026, 7, 3, 9);
+  const eveningFish = { ingredientIds: ["rice", "whitefish", "cabbage"], newExposureIngredientId: null };
+  const history: MealHistoryEntry[] = [
+    { servedAt: new Date(2026, 7, 1, 10).toISOString(), ingredientIds: ["rice", "whitefish"], completion: "half", mealType: "meal" },
+    // Recorded ahead of its evening time, so the rolling count before now does not include it yet.
+    { servedAt: new Date(2026, 7, 3, 18).toISOString(), ingredientIds: eveningFish.ingredientIds, completion: "half", mealType: "meal" },
+  ];
+  assert.equal(countRecentFish(ingredientCatalog, history, now), 1);
+
+  const plan = createBookBasedDayPlan(profile, ingredientCatalog, states, history, now, [{ index: 3, ...eveningFish }]);
+  assert.equal(plan.meals.find((meal) => meal.index === 3)?.optionId, "recorded:3");
+  for (const meal of plan.meals.filter((item) => item.index !== 3)) {
+    for (const option of mealOptions(meal)) assert.equal(hasGroup(option, "fish"), false, `meal ${meal.index}: ${option.title}`);
+  }
+  assert.equal(plan.checks.find((check) => check.id === "fish-cap")?.detail, "최근 7일 2/2회");
+
+  const afterMeatlessBreakfast = createBookBasedDayPlan(profile, ingredientCatalog, states, [], now, [
+    { index: 1, ingredientIds: ["rice", "chicken", "cabbage"], newExposureIngredientId: null },
+  ]);
+  const secondMeal = afterMeatlessBreakfast.meals.find((meal) => meal.index === 2)!;
+  for (const option of mealOptions(secondMeal)) assert.ok(hasGroup(option, "redMeat"), option.title);
+  assert.ok(afterMeatlessBreakfast.meals.flatMap(mealOptions).every((option) => option.optionId === "recorded:1" || option.items.every((item) => !item.isNewExposure)));
+});
+
+test("suggests next additions only after the current observation and in introduction order", () => {
+  const date = new Date("2026-07-08T09:00:00.000Z");
+  const states = [passed("rice"), passed("beef"), testing("cabbage", 2)];
+  const plan = createBookBasedDayPlan(baseProfile, ingredientCatalog, states, [], date, []);
+  assert.equal(plan.currentTrial?.id, "cabbage");
+  assert.equal(plan.nextAdditions[0]?.ingredient.id, "pumpkin");
+  assert.ok(plan.nextAdditions.every((addition) => addition.ingredient.introductionGroup === "yellow"));
+  assert.deepEqual(plan.nextAdditions[0].unlocks.map((menu) => [menu.title, menu.sourcePage]), [["소고기양배추단호박죽", "책 p.100"], ["양배추단호박죽", "책 p.110"]]);
+  const selectableMenus = new Set(plan.meals.flatMap(mealOptions).map((option) => option.optionId.split(":")[0]));
+  for (const addition of plan.nextAdditions) {
+    for (const menu of addition.unlocks) {
+      assert.ok(menu.ingredientIds.includes(addition.ingredient.id), menu.title);
+      assert.equal(selectableMenus.has(menu.menuId), false, `${menu.title} needs ${addition.ingredient.name} first`);
+    }
+  }
+
+  const avoided = createBookBasedDayPlan(baseProfile, ingredientCatalog, [...states, { ingredientId: "pumpkin", status: "avoid", testDay: null, exposureCount: 0, lastOfferedAt: null }], [], date, []);
+  assert.ok(avoided.nextAdditions.length > 0);
+  assert.ok(avoided.nextAdditions.every((addition) => addition.ingredient.id !== "pumpkin" && addition.ingredient.introductionGroup === "yellow"));
+
+  // With every yellow vegetable blocked the engine moves on, and the first suggestion follows it.
+  const yellowAvoided = ["pumpkin", "carrot", "beet", "bell-pepper"].map((ingredientId): ChildIngredientState => (
+    { ingredientId, status: "avoid", testDay: null, exposureCount: 0, lastOfferedAt: null }
+  ));
+  const groupBlocked = createBookBasedDayPlan(baseProfile, ingredientCatalog, [...states, ...yellowAvoided], [], date, []);
+  const afterCabbage = chooseNextIngredient(baseProfile, ingredientCatalog, [passed("rice"), passed("beef"), passed("cabbage"), ...yellowAvoided], [], date);
+  assert.ok(afterCabbage);
+  assert.equal(groupBlocked.nextAdditions[0]?.ingredient.id, afterCabbage.id);
+  assert.ok(groupBlocked.nextAdditions.every((addition) => addition.ingredient.introductionGroup !== "yellow"));
+
+  const hold = createBookBasedDayPlan(baseProfile, ingredientCatalog, states, [
+    { servedAt: "2026-07-07T10:00:00.000Z", ingredientIds: ["rice", "beef", "cabbage"], completion: "taste", mealType: "meal", reaction: "needsReview" },
+  ], date, []);
+  assert.equal(hold.currentTrial, null);
+  assert.deepEqual(hold.nextAdditions, []);
+});
+
+test("keeps the configured meal count on the first rice days by repeating the same rice", () => {
+  for (const mealsPerDay of [2, 3]) {
+    const profile: BabyProfile = { ...baseProfile, mealsPerDay };
+    const plan = createBookBasedDayPlan(profile, ingredientCatalog, [testing("rice", 2)], [], new Date(2026, 6, 2, 8), []);
+    assert.equal(plan.meals.length, mealsPerDay);
+    assert.deepEqual(plan.meals.map(optionIds), Array.from({ length: mealsPerDay }, () => ["rice"]));
+    assert.deepEqual(
+      plan.meals.map((meal) => meal.items.some((item) => item.isNewExposure)),
+      [true, ...Array<boolean>(mealsPerDay - 1).fill(false)],
+      "only the first meal is the trial record",
+    );
+    for (const meal of plan.meals.slice(1)) {
+      assert.equal(mealOptions(meal).length, 1);
+      assert.equal(meal.bookReference, "책 p.70");
+      assert.match(meal.reasons[0], /관찰 중인 재료\(쌀\)를 한 번 더 주는 끼니예요/);
+    }
+    assert.equal(plan.checks.find((check) => check.id === "new-food")?.detail, "1개 관찰 중");
+
+    // Once the trial meal is recorded, a refreshed plan still repeats rice in the other meals without counting it.
+    const afterTrial = createBookBasedDayPlan(
+      profile,
+      ingredientCatalog,
+      [{ ...testing("rice", 3), lastOfferedAt: new Date(2026, 6, 2, 8).toISOString() }],
+      [{ servedAt: new Date(2026, 6, 2, 8).toISOString(), ingredientIds: ["rice"], completion: "half", mealType: "meal", reaction: "none" }],
+      new Date(2026, 6, 2, 9),
+      [{ index: 1, ingredientIds: ["rice"], newExposureIngredientId: "rice", reaction: "none", title: "쌀죽", time: "08:00" }],
+    );
+    assert.equal(afterTrial.meals.length, mealsPerDay);
+    assert.equal(afterTrial.meals[0].optionId, "recorded:1");
+    for (const meal of afterTrial.meals.slice(1)) {
+      assert.deepEqual(meal.items.map((item) => [item.ingredient.id, item.isNewExposure]), [["rice", false]]);
+    }
+  }
+});
+
+test("holds the extra rice meals instead of repeating a blocked rice or another new food", () => {
+  const profile: BabyProfile = { ...baseProfile, mealsPerDay: 2 };
+
+  // A reaction under review on the first rice days leaves nothing safe to serve, so both meals explain the hold.
+  const review = createBookBasedDayPlan(profile, ingredientCatalog, [testing("rice", 2)], [
+    { servedAt: new Date(2026, 6, 2, 10).toISOString(), ingredientIds: ["rice"], completion: "taste", mealType: "meal", reaction: "needsReview" },
+  ], new Date(2026, 6, 3, 12), []);
+  assert.equal(review.currentTrial, null);
+  assert.deepEqual(review.meals.map((meal) => [isHeldMeal(meal), meal.items.length]), [[true, 0], [true, 0]]);
+  assert.match(review.meals[0].reasons[0], /확인이 필요한 반응/);
+  assert.deepEqual(review.nextAdditions, []);
+
+  // With rice blocked the engine's next grain is a trial in meal 1 only; the other meal does not repeat it.
+  const suspectedRice: ChildIngredientState = { ingredientId: "rice", status: "suspectedReaction", testDay: null, exposureCount: 2, lastOfferedAt: "2026-07-02T01:00:00.000Z", lastReaction: "두드러기" };
+  const blocked = createBookBasedDayPlan(profile, ingredientCatalog, [suspectedRice], [], new Date(2026, 6, 3, 12), []);
+  assert.equal(blocked.currentTrial?.id, "oatmeal");
+  assert.deepEqual(blocked.meals[0].items.map((item) => [item.ingredient.id, item.isNewExposure]), [["oatmeal", true]]);
+  assert.equal(isHeldMeal(blocked.meals[1]), true);
+  assert.match(blocked.meals[1].reasons[0], /첫 끼에서만 관찰/);
+  assert.equal(blocked.meals.some((meal) => optionIds(meal).includes("rice")), false);
+
+  // An adverse reaction recorded today on a repeated rice meal holds the rest of the day, even before its planned time.
+  const sameDay = createBookBasedDayPlan(profile, ingredientCatalog, [suspectedRice], [], new Date(2026, 6, 3, 8), [
+    { index: 2, ingredientIds: ["rice"], newExposureIngredientId: null, reaction: "needsReview", title: "쌀죽", time: "14:00" },
+  ]);
+  assert.equal(sameDay.currentTrial, null);
+  assert.equal(isHeldMeal(sameDay.meals[0]), true);
+  assert.equal(sameDay.meals.some((meal) => meal.items.some((item) => item.isNewExposure)), false);
+  assert.deepEqual(sameDay.nextAdditions, []);
+});
+
+test("a reaction on a repeated rice meal restricts rice without counting an exposure or a day", () => {
+  const rice: ChildIngredientState = {
+    ingredientId: "rice",
+    status: "testing",
+    testDay: 3,
+    exposureCount: 2,
+    firstOfferedAt: "2026-07-01T01:00:00.000Z",
+    lastOfferedAt: "2026-07-02T01:00:00.000Z",
+    acceptedTextureMm: [],
+    lastReaction: null,
+  };
+  const states = [rice];
+  for (const outcome of ["accepted", "tasteRejected"] as const) assert.equal(applyRepeatedTrialReaction(states, "rice", outcome), states);
+  assert.deepEqual(applyRepeatedTrialReaction(states, "rice", "textureDifficulty")[0], { ...rice, status: "paused" });
+  const suspected = applyRepeatedTrialReaction(states, "rice", "suspectedReaction", " 입 주변 발진 ");
+  assert.deepEqual(suspected[0], { ...rice, status: "suspectedReaction", testDay: null, lastReaction: "입 주변 발진" });
+  assert.equal(applyRepeatedTrialReaction(suspected, "rice", "textureDifficulty"), suspected, "never relaxes a suspected reaction");
+  // A repeat recorded before the day's trial meal still records the reaction, with no exposure counted.
+  assert.deepEqual(applyRepeatedTrialReaction([], "rice", "suspectedReaction")[0], {
+    ingredientId: "rice",
+    status: "suspectedReaction",
+    testDay: null,
+    exposureCount: 0,
+    firstOfferedAt: null,
+    lastOfferedAt: null,
+    acceptedTextureMm: [],
+    lastReaction: "확인 필요",
+  });
+});
+
+test("shows recorded meals as they were stored instead of regenerating a recipe", () => {
+  const profile: BabyProfile = { ...baseProfile, stage: "middle", ageMonths: 8, mealsPerDay: 2, textureMm: 4, mealTimes: ["08:30", "12:30"] };
+  const states = ["rice", "oatmeal", "beef", "cabbage", "pumpkin", "chicken"].map(passed);
+  const stored = {
+    index: 1,
+    ingredientIds: ["oatmeal", "chicken"],
+    newExposureIngredientId: null,
+    reaction: "none" as const,
+    title: "오트밀죽과 닭고기 반찬",
+    time: "07:50",
+    textureMm: 3,
+    servingGuide: "70~120g 범위에서 아이가 먹는 만큼",
+    textureGuide: "3mm 안팎",
+    servingMode: "죽과 반찬을 분리 제공",
+    reasons: ["책 p.144~145의 단계별 메뉴를 먹어본 재료와 최근 반복에 맞춰 골랐어요."],
+  };
+  const recorded = createBookBasedDayPlan(profile, ingredientCatalog, states, [], new Date(2026, 7, 3, 9), [stored]).meals[0];
+  assert.equal(recorded.optionId, "recorded:1");
+  assert.deepEqual(
+    [recorded.title, recorded.time, recorded.textureMm, recorded.servingGuide, recorded.textureGuide, recorded.servingMode, recorded.reasons],
+    [stored.title, stored.time, stored.textureMm, stored.servingGuide, stored.textureGuide, stored.servingMode, stored.reasons],
+  );
+  assert.deepEqual(optionIds(recorded), ["oatmeal", "chicken"]);
+  assert.deepEqual([recorded.preparationSteps, recorded.storageGuide, recorded.bookReference, recorded.alternatives], [[], "", undefined, undefined]);
+
+  // An older record that never stored these fields keeps them empty rather than borrowing today's settings.
+  const legacy = createBookBasedDayPlan(profile, ingredientCatalog, states, [], new Date(2026, 7, 3, 9), [
+    { index: 1, ingredientIds: ["rice", "beef"], title: "소고기죽", time: "08:30", textureMm: null, servingGuide: null, textureGuide: null, servingMode: null, reasons: [] },
+  ]).meals[0];
+  assert.deepEqual([legacy.textureMm, legacy.servingGuide, legacy.textureGuide, legacy.servingMode, legacy.preparationSteps], [undefined, "", "", "", []]);
+});
+
+test("keeps whole grains as meal bases in later stages while flour never stands alone", () => {
+  const profile: BabyProfile = { ...baseProfile, stage: "middle", ageMonths: 8, mealsPerDay: 2, textureMm: 4 };
+  const history: MealHistoryEntry[] = [
+    { servedAt: new Date(2026, 7, 2, 10).toISOString(), ingredientIds: ["rice", "chicken"], completion: "half", mealType: "meal" },
+  ];
+  const plan = createBookBasedDayPlan(profile, ingredientCatalog, ["rice", "barley", "chicken", "broccoli", "tomato"].map(passed), history, new Date(2026, 7, 3, 9), []);
+  assert.ok(
+    plan.meals.flatMap(mealOptions).some((option) => optionIds(option).includes("barley") && !optionIds(option).includes("rice")),
+    "barley, eaten less recently than rice, can carry a meal on its own",
+  );
+});
+
+test("the day checks follow the chosen menu and count each meal of the day once", () => {
+  const now = new Date(2026, 7, 4, 12);
+  const breakfast = ["rice", "beef", "cabbage", "pumpkin"];
+  const recordedBreakfast = { index: 1, ingredientIds: breakfast, newExposureIngredientId: null };
+  const morning: MealHistoryEntry = { servedAt: new Date(2026, 7, 4, 8).toISOString(), ingredientIds: breakfast, completion: "half", mealType: "meal" };
+  const check = (plan: DailyRecommendation, id: string) => plan.checks.find((item) => item.id === id);
+
+  // Initial stage, breakfast recorded: 사과죽 brings the day's fruit for meal 2, the other menus do not.
+  const initialDay = (choice?: PlannedMeal) => createBookBasedDayPlan(
+    { ...baseProfile, mealsPerDay: 2 },
+    ingredientCatalog,
+    [...breakfast, "apple", "wheat"].map(passed),
+    [morning],
+    now,
+    [recordedBreakfast],
+    choice ? { mealIndex: 2, optionId: choice.optionId } : null,
+  );
+  const initialOptions = mealOptions(initialDay().meals[1]);
+  const withFruit = initialOptions.find((option) => hasGroup(option, "fruit"));
+  const withoutFruit = initialOptions.find((option) => !hasGroup(option, "fruit"));
+  assert.ok(withFruit && withoutFruit, initialOptions.map((option) => option.title).join(" / "));
+  assert.equal(check(initialDay(), "fruit")?.met, hasGroup(initialOptions[0], "fruit"), "without a choice the default is counted");
+  assert.equal(check(initialDay(withFruit), "fruit")?.met, true, withFruit.title);
+  assert.equal(check(initialDay(withoutFruit), "fruit")?.met, false, withoutFruit.title);
+  assert.deepEqual(initialDay(withFruit).meals, initialDay().meals, "a choice changes the checks, not the menus");
+  const stale = createBookBasedDayPlan({ ...baseProfile, mealsPerDay: 2 }, ingredientCatalog, [...breakfast, "apple", "wheat"].map(passed), [morning], now, [recordedBreakfast], { mealIndex: 2, optionId: "initial-apple:not-offered" });
+  assert.deepEqual(stale.checks, initialDay().checks, "a menu that is no longer offered is not counted");
+
+  // Middle stage with one fish meal earlier this week: the chosen menu decides the weekly fish count.
+  const fishProfile: BabyProfile = { ...baseProfile, stage: "middle", ageMonths: 8, mealsPerDay: 2, snacksPerDay: 1, textureMm: 3 };
+  const fishStates = [...breakfast, "oatmeal", "carrot", "apple", "whitefish", "egg", "tofu", "potato", "onion"].map(passed);
+  const earlierFish: MealHistoryEntry = { servedAt: new Date(2026, 7, 1, 10).toISOString(), ingredientIds: ["rice", "whitefish"], completion: "half", mealType: "meal" };
+  const fishDay = (choice?: PlannedMeal) => createBookBasedDayPlan(
+    fishProfile,
+    ingredientCatalog,
+    fishStates,
+    [earlierFish, morning],
+    now,
+    [recordedBreakfast],
+    choice ? { mealIndex: 2, optionId: choice.optionId } : null,
+  );
+  const fishOptions = mealOptions(fishDay().meals[1]);
+  const fishMenu = fishOptions.find((option) => hasGroup(option, "fish"));
+  const otherMenu = fishOptions.find((option) => !hasGroup(option, "fish"));
+  assert.ok(fishMenu && otherMenu, fishOptions.map((option) => option.title).join(" / "));
+  assert.equal(check(fishDay(fishMenu), "fish-cap")?.detail, "최근 7일 2/2회", fishMenu.title);
+  assert.equal(check(fishDay(otherMenu), "fish-cap")?.detail, "최근 7일 1/2회", otherMenu.title);
+
+  // Once that fish meal is recorded (and in today's history), it is still counted once, through its slot.
+  const fishLunch: MealHistoryEntry = { servedAt: new Date(2026, 7, 4, 11).toISOString(), ingredientIds: optionIds(fishMenu), completion: "half", mealType: "meal" };
+  const afterLunch = createBookBasedDayPlan(fishProfile, ingredientCatalog, fishStates, [earlierFish, morning, fishLunch], now, [
+    recordedBreakfast,
+    { index: 2, ingredientIds: optionIds(fishMenu), newExposureIngredientId: null },
+  ]);
+  assert.deepEqual(check(afterLunch, "fish-cap"), check(fishDay(fishMenu), "fish-cap"));
 });

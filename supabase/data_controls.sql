@@ -1,6 +1,7 @@
 -- Run once in Supabase SQL Editor after schema.sql, book_engine_v2.sql,
 -- and routine_logs.sql.
--- Adds owner-only progress reset, family member removal, and authenticated account deletion.
+-- Adds family-member progress reset, owner-only family member removal, and authenticated account deletion.
+-- Projects that already ran an older copy of this file only need shared_progress_reset.sql.
 
 create or replace function public.reset_child_progress(target_child_id uuid)
 returns void
@@ -8,22 +9,15 @@ language plpgsql
 security definer
 set search_path = public
 as $$
-declare
-  target_household_id uuid;
 begin
   if auth.uid() is null then
     raise exception 'Authentication required';
   end if;
 
-  select c.household_id
-  into target_household_id
-  from public.children c
-  join public.households h on h.id = c.household_id
-  where c.id = target_child_id
-    and h.owner_id = auth.uid();
-
-  if target_household_id is null then
-    raise exception 'Only the household owner can reset shared progress';
+  -- Any current member of the child's household (owner or parent) may reset its shared progress,
+  -- using the same membership check as the child-data RLS policies.
+  if not public.can_access_child(target_child_id) then
+    raise exception 'Only family members can reset shared progress';
   end if;
 
   delete from public.ingredient_reactions where child_id = target_child_id;
