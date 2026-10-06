@@ -208,7 +208,8 @@ export interface PlannedMeal {
   type: "meal" | "snack";
   /**
    * Stable id of this composition; the same inputs always produce the same id. Recorded meals use
-   * `recorded:<index>` and meals with no safe food to offer use `hold:<index>`.
+   * `recorded:<index>`, meals with no safe food to offer use `hold:<index>`, and meals the family can only record as
+   * actually given (rice before six months, no book recommendation behind it) use `actual:<index>`.
    */
   optionId: string;
   time: string;
@@ -316,4 +317,11 @@ export interface DailyRecommendation {
   summaryReasons: string[];
   nextAdditions: NextAddition[];
   recommendationVersion: string;
+  /**
+   * True once the family has confirmed an initial start while the child is still younger than the initial stage's start
+   * age (six months, corrected age when set): the book's menus, checks and progression guidance do not apply and only
+   * rice actually given can be recorded. The book checks, development task, safety notes and summary reasons are left
+   * empty for such a day.
+   */
+  recordOnly: boolean;
 }

@@ -198,10 +198,11 @@ function hardBlocked(
   ingredient: IngredientDefinition,
   state: ChildIngredientState | undefined,
   fishCount: number,
+  ignoreMinimumAge = false,
 ): boolean {
   if (["avoid", "suspectedReaction", "paused", "locked"].includes(state?.status ?? "")) return true;
   if (stageRank[ingredient.minimumStage] > stageRank[inferWeaningStage(profile)]) return true;
-  if ((ingredient.minimumAgeMonths ?? 6) > ageForRules(profile)) return true;
+  if (!ignoreMinimumAge && (ingredient.minimumAgeMonths ?? 6) > ageForRules(profile)) return true;
   if (ingredient.foodGroup === "fish" && fishCount >= (ingredient.frequencyCap7Days ?? 2)) return true;
   const tags = new Set(ingredient.tags ?? []);
   if (profile.temporaryCondition === "mouthPain" && tags.has("acidic")) return true;
@@ -728,6 +729,11 @@ export function isHeldMeal(meal: PlannedMeal): boolean {
   return meal.optionId.startsWith("hold:");
 }
 
+/** A slot for recording what the family actually gave before the book's menus apply; it is not a recommendation. */
+export function isActualMeal(meal: PlannedMeal): boolean {
+  return meal.optionId.startsWith("actual:");
+}
+
 function templateIngredients(
   template: StageMenuTemplate,
   available: IngredientDefinition[],
@@ -1047,8 +1053,30 @@ export function createBookBasedDayPlan(
     currentTrial = null;
   }
   const repeatableRice = currentTrial?.id === FIRST_TRIAL_GRAIN_ID ? currentTrial : null;
-  const currentState = states.find((state) => state.ingredientId === currentTrial?.id);
-  const trialDay = currentTrial ? currentState?.testDay ?? 1 : null;
+  // Book menus start at six months (corrected age when set). Once the family has confirmed an initial-stage start on
+  // or before this day, the rice they actually give a younger child can still be recorded: the first meal records the
+  // rice observation with the usual trial rules and other meals record the same rice again. Nothing else is unlocked,
+  // and these meals carry no menu, serving, texture or cooking guidance.
+  const rice = definitionById.get(FIRST_TRIAL_GRAIN_ID);
+  const riceState = states.find((state) => state.ingredientId === FIRST_TRIAL_GRAIN_ID);
+  const startConfirmed = profile.stage === "initial"
+    && Boolean(profile.weaningStartDate && profile.weaningStartDate <= planDate);
+  // Before the initial stage's start age (six months, corrected age when set) a confirmed start gives a record-only day.
+  const recordOnly = startConfirmed && ageForRules(profile) < getStageGuide("initial").ageMonths[0];
+  const actualRice = rice
+    && startConfirmed
+    && !reviewHold
+    && !currentTrial
+    && !passed.length
+    && (rice.minimumAgeMonths ?? 6) > ageForRules(profile)
+    && !hardBlocked(profile, rice, riceState, priorFish, true)
+    && states.every((state) => state.status !== "testing" || state.ingredientId === rice.id)
+    ? rice
+    : null;
+  const actualTrial = actualRice && riceState?.status !== "passed" ? actualRice : null;
+  const observedTrial = currentTrial ?? actualTrial;
+  const currentState = states.find((state) => state.ingredientId === observedTrial?.id);
+  const trialDay = observedTrial ? currentState?.testDay ?? 1 : null;
   const passedGroups = passedIntroductionGroups(definitions, states);
   const effectiveGroups = new Set(passedGroups);
   if (currentTrial) effectiveGroups.add(currentTrial.introductionGroup);
@@ -1110,6 +1138,31 @@ export function createBookBasedDayPlan(
     : currentTrial && index !== trialMealIndex
       ? `처음 먹이는 재료(${currentTrial.name})는 첫 끼에서만 관찰해요. 지금 줄 수 있는 통과한 재료가 없어 이번 끼니는 쉬어요.`
       : "지금 줄 수 있는 재료가 없어 이번 끼니는 쉬어요. 재료 탭에서 막힌 재료의 상태를 확인해주세요.");
+  const actualRiceMeal = (food: IngredientDefinition, index: number, time: string): PlannedMeal => {
+    const trial = index === trialMealIndex ? actualTrial : null;
+    return {
+      index,
+      type: "meal",
+      optionId: `actual:${index}`,
+      time,
+      title: "쌀죽",
+      items: [itemFor(food, trial?.id ?? null)],
+      servingGuide: "",
+      textureGuide: "",
+      servingMode: "",
+      preparationSteps: [],
+      storageGuide: "",
+      reasons: [
+        `${profile.correctedAgeMonths != null ? "교정 연령으로 만 6개월 전이라" : "만 6개월 전이라"} 책 추천 메뉴와 제공량·질감·조리 안내는 보여주지 않아요.`,
+        "가족이 확정한 시작일부터 실제로 먹인 쌀죽을 기록하는 칸이에요. 먹이라거나 건너뛰라는 안내가 아니니, 궁금한 점은 소아청소년과와 상의해주세요.",
+        trial
+          ? `기록하면 쌀 관찰 ${trialDay}/${guide.newFoodIntervalDays[1]}일째로 반영되고, 관찰 일수는 하루 첫 끼 기록으로만 늘어요.`
+          : actualTrial
+            ? "관찰 중인 쌀을 한 번 더 먹였을 때 기록해요. 새 재료로 세지 않고 관찰 일수도 늘지 않아요."
+            : "통과한 쌀을 먹였을 때 기록해요. 다른 재료와 책 메뉴는 만 6개월부터 추천해요.",
+      ],
+    };
+  };
 
   // Pass 1: the default meal for each unrecorded slot, in order, so the day keeps one fish budget and
   // does not repeat a book menu. A slot with no safe composition stays empty and becomes a hold.
@@ -1150,6 +1203,10 @@ export function createBookBasedDayPlan(
       continue;
     }
     const chosen = defaults.get(index) ?? null;
+    if (!chosen && actualRice) {
+      meals.push(actualRiceMeal(actualRice, index, time));
+      continue;
+    }
     if (!chosen) {
       meals.push({
         index,
@@ -1246,14 +1303,15 @@ export function createBookBasedDayPlan(
     date: isoDate(today),
     stage,
     stageLabel: guide.label,
-    currentTrial,
+    currentTrial: observedTrial,
     trialDay,
     meals,
     snacks,
-    checks,
-    safetyNotes,
-    developmentTask: developmentTaskFor(profile, stage),
-    summaryReasons: [
+    // A day before six months carries no book check, texture, development or progression claim.
+    checks: recordOnly ? [] : checks,
+    safetyNotes: recordOnly ? [] : safetyNotes,
+    developmentTask: recordOnly ? "" : developmentTaskFor(profile, stage),
+    summaryReasons: recordOnly ? [] : [
       currentTrial
         ? `${introductionLabels[currentTrial.introductionGroup]} 도입 상태와 관찰 간격을 가장 먼저 반영했어요.`
         : "현재 도입할 수 있는 새 재료보다 먹어본 재료의 균형을 우선했어요.",
@@ -1262,6 +1320,7 @@ export function createBookBasedDayPlan(
     ],
     nextAdditions: nextAdditionsFor(profile, stage, definitions, states, history, today, currentTrial, passed, reviewHold),
     recommendationVersion: RECOMMENDATION_VERSION,
+    recordOnly,
   };
 }
 

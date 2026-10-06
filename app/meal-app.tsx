@@ -33,6 +33,7 @@ import {
   createBookBasedDayPlan,
   createInitialMealSuggestion,
   hasStartReadiness,
+  isActualMeal,
   isHeldMeal,
   isRecordedMeal,
   mealOptions,
@@ -125,6 +126,9 @@ type RecordTarget = {
 const STALE_MEAL_CHOICE_NOTICE = "고른 메뉴가 새 기록이나 반응·설정 변경으로 지금은 맞지 않아 기본 추천으로 돌아왔어요.";
 const STALE_RECORD_NOTICE = "새 기록이나 반응·설정 변경으로 기록하려던 식사 내용이 바뀌었어요. 바뀐 추천을 확인한 뒤 다시 기록해주세요.";
 const DAY_SNAPSHOT_NOT_SAVED_NOTICE = "식사 기록은 저장했지만 이날 추천 내역은 저장하지 못했어요. 같은 식사를 다시 기록하지 않아도 돼요.";
+const START_REQUIRED_NOTICE = "이유식 시작을 확정한 뒤 실제로 먹인 식사를 기록할 수 있어요. 준비 화면에서 시작을 설정해주세요.";
+// Shown with a meal recorded as actually given, so it is never mistaken for a book recommendation.
+const WITHOUT_RECOMMENDATION_NOTE = "실제로 먹인 식사 기록 · 책 추천 메뉴가 아니에요";
 
 type CalendarDay = {
   id: string;
@@ -800,6 +804,7 @@ function TodayMeal({
       && focusedMeal.items.some((item) => item.isNewExposure && item.ingredient.id === bookPlan.currentTrial?.id),
   );
   const focusedIsHold = !focusedRecord && isHeldMeal(focusedMeal);
+  const focusedIsActual = !focusedRecord && isActualMeal(focusedMeal);
   const suggestion = useMemo(
     (): MealSuggestion => {
       if (profile.stage === "prestart") {
@@ -869,6 +874,7 @@ function TodayMeal({
           <div>
             {suggestion.testLabel && <span className="status-pill">{suggestion.testLabel}</span>}
             {focusedIsHold && <span className="status-pill">쉬어가기</span>}
+            {(focusedIsActual || focusedRecord?.withoutRecommendation) && <span className="status-pill">직접 기록</span>}
             <h2>{suggestion.title}</h2>
           </div>
         </div>
@@ -934,9 +940,16 @@ function TodayMeal({
               </dl>
             )}
 
-            {suggestion.reasons.length > 0 && (
+            {focusedIsActual ? (
+              <div className="development-note meal-actual-note" role="note">
+                <Info size={17} aria-hidden="true" />
+                <p>{focusedMeal.reasons.join(" ")}</p>
+              </div>
+            ) : suggestion.reasons.length > 0 && (
               <details className="reason-box">
-                <summary>{focusedRecord ? "기록할 때 본 추천 이유" : "왜 오늘 이 메뉴인가요?"}</summary>
+                <summary>{focusedRecord
+                  ? focusedRecord.withoutRecommendation ? "기록할 때 본 안내" : "기록할 때 본 추천 이유"
+                  : "왜 오늘 이 메뉴인가요?"}</summary>
                 <ul>
                   {suggestion.reasons.map((reason) => (
                     <li key={reason}>{reason}</li>
@@ -957,9 +970,17 @@ function TodayMeal({
               </details>
             )}
 
-            <button className="primary-action" type="button" onClick={() => (focusedRecord ? onEditRecord(focusedRecord) : onRecord(focusedMeal))}>
-              {focusedRecord ? `${focusedMeal.index}번째 기록 수정하기` : `${focusedMeal.index}번째 식사 기록하기`}
-            </button>
+            {profile.stage === "prestart" ? (
+              // The preview simulates six months, so it never records; a real record needs a confirmed start.
+              <div className="development-note preview-record-note" role="note">
+                <Info size={17} aria-hidden="true" />
+                <p>미리보기에서는 기록하지 않아요. 준비 화면에서 이유식 시작을 확정하면 실제로 먹인 식사를 기록할 수 있어요.</p>
+              </div>
+            ) : (
+              <button className="primary-action" type="button" onClick={() => (focusedRecord ? onEditRecord(focusedRecord) : onRecord(focusedMeal))}>
+                {focusedRecord ? `${focusedMeal.index}번째 기록 수정하기` : `${focusedMeal.index}번째 식사 기록하기`}
+              </button>
+            )}
           </>
         )}
       </section>
@@ -992,24 +1013,27 @@ function TodayMeal({
         </section>
       )}
 
-      <section className="section-card adaptive-review-card">
-        <div className="section-heading">
-          <div><span className="overline">최근 기록 반영</span><h2>다음 식사 조정</h2></div>
-          <span className={`count-badge is-${adaptiveReview.progression.action}`}>{adaptiveReview.progression.action === "advance" ? "진행 제안" : "현재 유지"}</span>
-        </div>
-        <div className="adaptive-adjustments">
-          {adaptiveReview.adjustments.map((adjustment) => (
-            <div className={`adaptive-adjustment is-${adjustment.tone}`} key={adjustment.id}>
-              <i aria-hidden="true">{adjustment.tone === "positive" ? "✓" : adjustment.tone === "attention" ? "!" : "·"}</i>
-              <p><strong>{adjustment.title}</strong><small>{adjustment.detail}</small></p>
-            </div>
-          ))}
-        </div>
-        <div className="progression-proposal">
-          <p><strong>{adaptiveReview.progression.title}</strong><small>{adaptiveReview.progression.detail}</small></p>
-          <button type="button" onClick={onReviewProgress}>설정에서 확인</button>
-        </div>
-      </section>
+      {/* Before six months no book progression applies, so there is nothing to adjust or advance. */}
+      {!bookPlan.recordOnly && (
+        <section className="section-card adaptive-review-card">
+          <div className="section-heading">
+            <div><span className="overline">최근 기록 반영</span><h2>다음 식사 조정</h2></div>
+            <span className={`count-badge is-${adaptiveReview.progression.action}`}>{adaptiveReview.progression.action === "advance" ? "진행 제안" : "현재 유지"}</span>
+          </div>
+          <div className="adaptive-adjustments">
+            {adaptiveReview.adjustments.map((adjustment) => (
+              <div className={`adaptive-adjustment is-${adjustment.tone}`} key={adjustment.id}>
+                <i aria-hidden="true">{adjustment.tone === "positive" ? "✓" : adjustment.tone === "attention" ? "!" : "·"}</i>
+                <p><strong>{adjustment.title}</strong><small>{adjustment.detail}</small></p>
+              </div>
+            ))}
+          </div>
+          <div className="progression-proposal">
+            <p><strong>{adaptiveReview.progression.title}</strong><small>{adaptiveReview.progression.detail}</small></p>
+            <button type="button" onClick={onReviewProgress}>설정에서 확인</button>
+          </div>
+        </section>
+      )}
 
       {(bookPlan.meals.length > 1 || bookPlan.snacks.length > 0) && (
         <section className="section-card daily-schedule-card">
@@ -1064,31 +1088,33 @@ function TodayMeal({
         </section>
       )}
 
-      <section className="section-card rule-check-card">
-        <div className="section-heading">
-          <div>
-            <span className="overline">책 기반 확인</span>
-            <h2>오늘 적용된 규칙</h2>
-          </div>
-          <span className="count-badge">{bookPlan.stageLabel}</span>
-        </div>
-        <div className="rule-check-grid">
-          {bookPlan.checks.map((check) => (
-            <div className={`rule-check-item ${check.met ? "is-met" : ""}`} key={check.id}>
-              <span aria-hidden="true">{check.met ? "✓" : "·"}</span>
-              <div><strong>{check.label}</strong><small>{check.detail}</small></div>
+      {!bookPlan.recordOnly && (
+        <section className="section-card rule-check-card">
+          <div className="section-heading">
+            <div>
+              <span className="overline">책 기반 확인</span>
+              <h2>오늘 적용된 규칙</h2>
             </div>
-          ))}
-        </div>
-        <div className="development-note">
-          <Sprout size={17} aria-hidden="true" />
-          <p><strong>오늘의 먹기 연습</strong><br />{bookPlan.developmentTask}</p>
-        </div>
-        <details className="reason-box safety-reasons">
-          <summary>안전 기준 보기</summary>
-          <ul>{bookPlan.safetyNotes.map((note) => <li key={note}>{note}</li>)}</ul>
-        </details>
-      </section>
+            <span className="count-badge">{bookPlan.stageLabel}</span>
+          </div>
+          <div className="rule-check-grid">
+            {bookPlan.checks.map((check) => (
+              <div className={`rule-check-item ${check.met ? "is-met" : ""}`} key={check.id}>
+                <span aria-hidden="true">{check.met ? "✓" : "·"}</span>
+                <div><strong>{check.label}</strong><small>{check.detail}</small></div>
+              </div>
+            ))}
+          </div>
+          <div className="development-note">
+            <Sprout size={17} aria-hidden="true" />
+            <p><strong>오늘의 먹기 연습</strong><br />{bookPlan.developmentTask}</p>
+          </div>
+          <details className="reason-box safety-reasons">
+            <summary>안전 기준 보기</summary>
+            <ul>{bookPlan.safetyNotes.map((note) => <li key={note}>{note}</li>)}</ul>
+          </details>
+        </section>
+      )}
 
       <section className="sync-row">
         <span className="sync-row-icon" aria-hidden="true"><Link2 size={19} /></span>
@@ -1261,6 +1287,7 @@ function RecordsView({
   onAddRecord,
   onEditRecord,
   onEditRoutine,
+  recordOnly,
 }: {
   records: FamilyMealRecord[];
   routineLogs: DailyRoutineLog[];
@@ -1279,6 +1306,8 @@ function RecordsView({
   onAddRecord: (date: string) => void;
   onEditRecord: (record: FamilyMealRecord) => void;
   onEditRoutine: (date: string) => void;
+  /** Before six months no food group or texture is suggested; the board only sums up what was recorded. */
+  recordOnly: boolean;
 }) {
   const monthDays = useMemo(() => createMonthDays(calendarCursor), [calendarCursor]);
   const firstDayOffset = new Date(calendarCursor.year, calendarCursor.month, 1).getDay();
@@ -1333,7 +1362,9 @@ function RecordsView({
         </div>
         <div className="weekly-focus-note">
           <Info size={17} aria-hidden="true" />
-          <p><strong>다음 보완</strong><br />{weeklyBalance.focus}<small>{weeklyBalance.variety}</small></p>
+          <p><strong>다음 보완</strong><br />{recordOnly
+            ? "만 6개월 전이라 다음에 더할 식품군이나 질감은 안내하지 않아요. 실제로 먹인 쌀죽 기록만 모아요."
+            : weeklyBalance.focus}<small>{weeklyBalance.variety}</small></p>
         </div>
       </section>
 
@@ -2759,7 +2790,7 @@ function RecordSheet({
   targetDate: string;
   mealIndex: number;
   plannedTime: string;
-  mealSummary: { title: string; ingredientNames: string[] } | null;
+  mealSummary: { title: string; ingredientNames: string[]; provenance?: string } | null;
   initialRecord: FamilyMealRecord | null;
   onClose: () => void;
   onSave: (draft: RecordDraft) => Promise<void>;
@@ -2804,6 +2835,7 @@ function RecordSheet({
           <p className="record-sheet-meal">
             <strong>{mealSummary.title}</strong>
             <small>{mealSummary.ingredientNames.join(" · ")}</small>
+            {mealSummary.provenance && <small className="record-sheet-provenance">{mealSummary.provenance}</small>}
           </p>
         )}
 
@@ -2945,9 +2977,14 @@ export function MealApp() {
         ingredientNames: editingRecord.ingredientIds
           .map((id) => allIngredients.find((ingredient) => ingredient.id === id)?.name)
           .filter((name): name is string => Boolean(name)),
+        provenance: editingRecord.withoutRecommendation ? WITHOUT_RECOMMENDATION_NOTE : undefined,
       }
     : recordTarget?.meal
-      ? { title: recordTarget.meal.title, ingredientNames: recordTarget.meal.items.map((item) => item.ingredient.name) }
+      ? {
+          title: recordTarget.meal.title,
+          ingredientNames: recordTarget.meal.items.map((item) => item.ingredient.name),
+          provenance: isActualMeal(recordTarget.meal) ? WITHOUT_RECOMMENDATION_NOTE : undefined,
+        }
       : null;
 
   const showToast = useCallback((message: string) => {
@@ -3167,9 +3204,15 @@ export function MealApp() {
         const nextState = nextStates.find((state) => state.ingredientId === (introducedIngredientId ?? repeatedIngredientId));
         if (nextStates !== ingredientStates && nextState) await saveChildIngredientState(currentChild.id, nextState);
       } else {
+        // A new record needs the real child's confirmed start; the prestart preview only simulates six months.
+        if (currentChild.stage === "prestart") {
+          rejectRecord(START_REQUIRED_NOTICE);
+          return;
+        }
         const shown = target.meal;
         const shownTextureMm = shown?.textureMm;
-        if (!shown || isHeldMeal(shown) || !shown.items.length || shownTextureMm === undefined) {
+        // Only a meal recorded without a recommendation comes with no suggested texture.
+        if (!shown || isHeldMeal(shown) || !shown.items.length || (shownTextureMm === undefined && !isActualMeal(shown))) {
           rejectRecord(STALE_RECORD_NOTICE);
           return;
         }
@@ -3221,11 +3264,12 @@ export function MealApp() {
           reaction: draft.reaction,
           note: draft.note,
           stage: plan.stage,
-          textureMm: shownTextureMm,
+          textureMm: shownTextureMm ?? null,
           servingGuide: shown.servingGuide,
           textureGuide: shown.textureGuide,
           servingMode: shown.servingMode,
           recommendationReasons: shown.reasons,
+          withoutRecommendation: isActualMeal(shown),
         });
         if (recordsTrial && plan.currentTrial) {
           const nextStates = applyTrialOutcome(
@@ -3409,6 +3453,10 @@ export function MealApp() {
     }
     if (date > todayId) {
       showToast("미래 날짜의 식사는 아직 기록할 수 없어요.");
+      return;
+    }
+    if (currentChild.stage === "prestart") {
+      showToast(START_REQUIRED_NOTICE);
       return;
     }
     const plan = createBookBasedDayPlan(
@@ -3654,6 +3702,7 @@ export function MealApp() {
             onAddRecord={addRecordForDate}
             onEditRecord={openRecordEditor}
             onEditRoutine={editRoutineForDate}
+            recordOnly={currentPlan.recordOnly}
           />
         )}
         {activeTab === "profile" && (

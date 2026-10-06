@@ -43,6 +43,8 @@ export interface FamilyMealRecord {
   textureGuide: string | null;
   servingMode: string | null;
   recommendationReasons: string[];
+  /** True for a meal the family recorded as actually given with no book recommendation behind it. */
+  withoutRecommendation: boolean;
   recordedBy: string;
   recordedAt: string;
 }
@@ -60,11 +62,13 @@ export interface SaveFamilyMealInput {
   reaction: FamilyMealReaction;
   note: string;
   stage: Exclude<BabyProfile["stage"], "prestart">;
-  textureMm: number;
+  /** Null when no texture was suggested for the meal (a meal recorded without a recommendation). */
+  textureMm: number | null;
   servingGuide: string;
   textureGuide: string;
   servingMode: string;
   recommendationReasons: string[];
+  withoutRecommendation: boolean;
 }
 
 interface MealPlanItemRow {
@@ -101,12 +105,16 @@ interface CompletedMealPlanRow {
   texture_guide?: string | null;
   serving_mode?: string | null;
   recommendation_reasons?: unknown;
+  recommendation_version?: string | null;
   meal_plan_items?: MealPlanItemRow[] | null;
   meal_logs?: MealLogRow | MealLogRow[] | null;
 }
 
 // Older saves wrote this placeholder for every meal instead of the serving style the family saw.
 const LEGACY_SERVING_MODE = "mixed";
+// meal_plans.recommendation_version of a saved meal: the book engine's menu, or a meal the family recorded as given.
+const BOOK_RECOMMENDATION_VERSION = "book-engine-v2";
+const WITHOUT_RECOMMENDATION_VERSION = "parent-record";
 
 interface ChildRow {
   id: string;
@@ -611,7 +619,7 @@ export async function loadDailyRecommendation(childId: string, date: string): Pr
 export async function loadFamilyMealRecords(childId: string): Promise<FamilyMealRecord[]> {
   const { data, error } = await getSupabaseClient()
     .from("meal_plans")
-    .select("id,meal_date,meal_index,planned_time,title,texture_mm,serving_guide,texture_guide,serving_mode,recommendation_reasons,meal_plan_items(ingredient_id,is_new_exposure),meal_logs(id,completion,reaction,note,recorded_by,recorded_at)")
+    .select("id,meal_date,meal_index,planned_time,title,texture_mm,serving_guide,texture_guide,serving_mode,recommendation_reasons,recommendation_version,meal_plan_items(ingredient_id,is_new_exposure),meal_logs(id,completion,reaction,note,recorded_by,recorded_at)")
     .eq("child_id", childId)
     .eq("status", "completed")
     .order("meal_date", { ascending: false });
@@ -639,6 +647,7 @@ export async function loadFamilyMealRecords(childId: string): Promise<FamilyMeal
       recommendationReasons: Array.isArray(plan.recommendation_reasons)
         ? plan.recommendation_reasons.filter((reason): reason is string => typeof reason === "string")
         : [],
+      withoutRecommendation: plan.recommendation_version === WITHOUT_RECOMMENDATION_VERSION,
       recordedBy: log.recorded_by,
       recordedAt: log.recorded_at,
     } satisfies FamilyMealRecord];
@@ -680,7 +689,7 @@ export async function saveFamilyMealRecord(input: SaveFamilyMealInput): Promise<
       serving_guide: input.servingGuide,
       texture_guide: input.textureGuide,
       status: "completed",
-      recommendation_version: "book-engine-v2",
+      recommendation_version: input.withoutRecommendation ? WITHOUT_RECOMMENDATION_VERSION : BOOK_RECOMMENDATION_VERSION,
       recommendation_reasons: input.recommendationReasons,
       stage: input.stage,
       texture_mm: input.textureMm,

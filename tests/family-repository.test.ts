@@ -70,6 +70,7 @@ const mealInput: SaveFamilyMealInput = {
   textureGuide: "",
   servingMode: "토핑을 올린 죽",
   recommendationReasons: [],
+  withoutRecommendation: false,
 };
 
 function replyTo(existingItemIds: string[] | null, itemInsertStatus = 201): (call: RestCall) => RestReply {
@@ -107,6 +108,15 @@ test("meal save writes new items before deleting only the previous rows", async 
   const insertedItems = calls[2].body as Array<{ ingredient_id: string; is_new_exposure: boolean }>;
   assert.deepEqual(insertedItems.map((item) => item.is_new_exposure), [false, false, false]);
   assert.equal((calls[1].body as { serving_mode: string }).serving_mode, "토핑을 올린 죽", "the chosen serving style is stored");
+  assert.equal((calls[1].body as { recommendation_version: string }).recommendation_version, "book-engine-v2");
+
+  // A meal recorded as actually given (no book recommendation) says so and stores no suggested texture.
+  calls.length = 0;
+  route = replyTo(null);
+  await saveFamilyMealRecord({ ...mealInput, ingredients: [ingredientById.get("rice")!], newExposureIngredientId: "rice", textureMm: null, servingMode: "", withoutRecommendation: true });
+  const actualPlan = calls[1].body as { recommendation_version: string; texture_mm: number | null };
+  const actualLog = calls.find((call) => call.path === "meal_logs")!.body as { texture_mm: number | null };
+  assert.deepEqual([actualPlan.recommendation_version, actualPlan.texture_mm, actualLog.texture_mm], ["parent-record", null, null]);
 
   calls.length = 0;
   route = replyTo(["old-1", "old-2"], 409);
@@ -143,9 +153,14 @@ test("loaded meal records expose the ingredient the meal introduced and what the
   };
   route = () => ({
     status: 200,
-    body: [row, { ...row, id: "plan-0", meal_date: "2026-08-31", serving_guide: null, texture_guide: null, serving_mode: "mixed", recommendation_reasons: [] }],
+    body: [
+      { ...row, recommendation_version: "book-engine-v2" },
+      { ...row, id: "plan-0", meal_date: "2026-08-31", serving_guide: null, texture_guide: null, serving_mode: "mixed", recommendation_reasons: [] },
+      { ...row, id: "plan-2", meal_date: "2026-09-02", texture_mm: null, serving_mode: "", recommendation_version: "parent-record" },
+    ],
   });
-  const [record, legacy] = await loadFamilyMealRecords("child-1");
+  const [record, legacy, actual] = await loadFamilyMealRecords("child-1");
+  assert.match(calls.at(-1)!.query, /recommendation_version/, "the provenance column is loaded");
   assert.deepEqual(record.ingredientIds, ["rice", "spinach"]);
   assert.equal(record.newExposureIngredientId, "spinach");
   assert.deepEqual(
@@ -154,6 +169,8 @@ test("loaded meal records expose the ingredient the meal introduced and what the
   );
   // Older saves stored a "mixed" placeholder rather than the serving style that was shown.
   assert.deepEqual([legacy.servingGuide, legacy.textureGuide, legacy.servingMode, legacy.recommendationReasons], [null, null, null, []]);
+  assert.deepEqual([record.withoutRecommendation, legacy.withoutRecommendation, actual.withoutRecommendation], [false, false, true]);
+  assert.deepEqual([actual.textureMm, actual.servingMode], [null, null]);
 });
 
 test("loads the stored day snapshot for one child and date", async () => {

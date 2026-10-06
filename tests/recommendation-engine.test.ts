@@ -11,6 +11,7 @@ import {
   createInitialMealSuggestion,
   hasStartReadiness,
   inferWeaningStage,
+  isActualMeal,
   isHeldMeal,
   mealOptions,
   resolveMealTimes,
@@ -19,6 +20,7 @@ import type {
   BabyProfile,
   ChildIngredientState,
   DailyRecommendation,
+  IngredientDefinition,
   MealHistoryEntry,
   PlannedMeal,
 } from "../lib/domain";
@@ -979,4 +981,123 @@ test("the day checks follow the chosen menu and count each meal of the day once"
     { index: 2, ingredientIds: optionIds(fishMenu), newExposureIngredientId: null },
   ]);
   assert.deepEqual(check(afterLunch, "fish-cap"), check(fishDay(fishMenu), "fish-cap"));
+});
+
+test("records the rice actually given before six months once the family confirmed the start", () => {
+  // Book menus start at six months; this child is five months old by the planner's rule and started today.
+  const day = (offset: number, hour = 12) => new Date(2026, 2, 10 + offset, hour);
+  const underSix: BabyProfile = { ...baseProfile, ageMonths: 5, mealsPerDay: 2, weaningStartDate: "2026-03-10" };
+  const firstDay = createBookBasedDayPlan(underSix, ingredientCatalog, [], [], day(0), []);
+  assert.deepEqual([firstDay.stage, firstDay.currentTrial?.id, firstDay.trialDay], ["initial", "rice", 1]);
+  assert.ok(firstDay.meals.every((meal) => isActualMeal(meal) && !isHeldMeal(meal)), "no age-only hold after the real start");
+  assert.deepEqual(
+    firstDay.meals.map((meal) => meal.items.map((item) => [item.ingredient.id, item.isNewExposure])),
+    [[["rice", true]], [["rice", false]]],
+    "the first meal records the rice observation and the second meal the same rice again",
+  );
+  for (const meal of firstDay.meals) {
+    assert.deepEqual(mealOptions(meal), [meal], "nothing else to choose");
+    assert.deepEqual(
+      [meal.title, meal.servingGuide, meal.textureGuide, meal.textureMm, meal.servingMode, meal.preparationSteps, meal.storageGuide, meal.bookReference],
+      ["쌀죽", "", "", undefined, "", [], "", undefined],
+      "no book menu, serving, texture or cooking guidance",
+    );
+    assert.match(meal.reasons[0], /^만 6개월 전이라 책 추천 메뉴와 제공량·질감·조리 안내는 보여주지 않아요/);
+    assert.match(meal.reasons[1], /실제로 먹인 쌀죽을 기록하는 칸이에요. 먹이라거나 건너뛰라는 안내가 아니/);
+  }
+  assert.match(firstDay.meals[0].reasons[2], /쌀 관찰 1\/3일째/);
+  assert.match(firstDay.meals[1].reasons[2], /새 재료로 세지 않고 관찰 일수도 늘지 않아요/);
+  assert.deepEqual(firstDay.nextAdditions, []);
+  const noBookClaims = (plan: DailyRecommendation) => [plan.recordOnly, plan.checks, plan.safetyNotes, plan.developmentTask, plan.summaryReasons];
+  assert.deepEqual(noBookClaims(firstDay), [true, [], [], "", []], "no book check, texture, development or progression claim");
+
+  // Recording the first meal advances the observation once; the second rice meal that day only repeats it.
+  let states = applyTrialOutcome([], "rice", "accepted", day(0, 9).toISOString(), 3);
+  assert.deepEqual([states[0].status, states[0].testDay, states[0].exposureCount], ["testing", 2, 1]);
+  const history: MealHistoryEntry[] = [{ servedAt: day(0, 9).toISOString(), ingredientIds: ["rice"], completion: "half", mealType: "meal", reaction: "none" }];
+  const afterFirst = createBookBasedDayPlan(underSix, ingredientCatalog, states, history, day(0, 12), [
+    { index: 1, ingredientIds: ["rice"], newExposureIngredientId: "rice", reaction: "none", title: "쌀죽", time: "09:00", textureMm: null, reasons: firstDay.meals[0].reasons },
+  ]);
+  assert.deepEqual(afterFirst.meals.map((meal) => meal.optionId), ["recorded:1", "actual:2"]);
+  assert.deepEqual(afterFirst.meals[1].items.map((item) => [item.ingredient.id, item.isNewExposure]), [["rice", false]]);
+  assert.equal(applyRepeatedTrialReaction(states, "rice", "accepted"), states, "a repeat never counts another day");
+  const allRecorded = createBookBasedDayPlan(underSix, ingredientCatalog, states, history, day(0, 18), [
+    { index: 1, ingredientIds: ["rice"], newExposureIngredientId: "rice", reaction: "none", title: "쌀죽", time: "09:00", textureMm: null },
+    { index: 2, ingredientIds: ["rice"], newExposureIngredientId: null, reaction: "none", title: "쌀죽", time: "13:00", textureMm: null },
+  ]);
+  assert.deepEqual(allRecorded.meals.map((meal) => [meal.optionId, meal.textureMm]), [["recorded:1", undefined], ["recorded:2", undefined]]);
+  assert.deepEqual(noBookClaims(allRecorded), [true, [], [], "", []], "the recorded day claims no book check or texture either");
+
+  // Day 2 continues from that record, and day 3 at six months continues it as the book's own rice menu.
+  const secondDay = createBookBasedDayPlan(underSix, ingredientCatalog, states, history, day(1), []);
+  assert.deepEqual([isActualMeal(secondDay.meals[0]), secondDay.trialDay, secondDay.meals[0].items[0].isNewExposure], [true, 2, true]);
+  assert.match(secondDay.meals[0].reasons[2], /쌀 관찰 2\/3일째/);
+  states = applyTrialOutcome(states, "rice", "accepted", day(1, 9).toISOString(), 3);
+  history.push({ servedAt: day(1, 9).toISOString(), ingredientIds: ["rice"], completion: "half", mealType: "meal", reaction: "none" });
+  const sixMonths = createBookBasedDayPlan({ ...underSix, ageMonths: 6 }, ingredientCatalog, states, history, day(2), []);
+  assert.deepEqual([sixMonths.currentTrial?.id, sixMonths.trialDay, sixMonths.meals.some(isActualMeal)], ["rice", 3, false]);
+  assert.deepEqual([sixMonths.meals[0].title, sixMonths.meals[0].bookReference], ["쌀죽", "책 p.70"]);
+  assert.ok(sixMonths.meals[0].servingGuide && sixMonths.meals[0].preparationSteps.length, "book guidance starts at six months");
+  assert.equal(sixMonths.recordOnly, false);
+  assert.equal(sixMonths.checks.find((check) => check.id === "texture")?.met, true, "book checks return at six months");
+  assert.ok(sixMonths.developmentTask && sixMonths.safetyNotes.length && sixMonths.summaryReasons.length);
+
+  // Rice that passed while the child is still younger stays recordable as a familiar food, never as a new one.
+  const passedRice = createBookBasedDayPlan(underSix, ingredientCatalog, [passed("rice")], [], day(3), []);
+  assert.equal(passedRice.currentTrial, null);
+  assert.ok(passedRice.meals.every((meal) => isActualMeal(meal) && optionIds(meal).join() === "rice" && !meal.items[0].isNewExposure));
+  assert.match(passedRice.meals[0].reasons[2], /통과한 쌀을 먹였을 때 기록해요/);
+
+  // A corrected age below six months is named as such.
+  const corrected = createBookBasedDayPlan({ ...underSix, ageMonths: 7, correctedAgeMonths: 5 }, ingredientCatalog, [], [], day(0), []);
+  assert.match(corrected.meals[0].reasons[0], /^교정 연령으로 만 6개월 전이라/);
+});
+
+test("before six months only rice can be recorded and every other hold and food limit stays", () => {
+  const day = new Date(2026, 2, 10, 12);
+  const underSix: BabyProfile = { ...baseProfile, ageMonths: 5, mealsPerDay: 2, weaningStartDate: "2026-03-10" };
+  const kinds = (plan: DailyRecommendation) => plan.meals.map((meal) => meal.optionId.split(":")[0]);
+
+  // Without a confirmed start on or before the day (no date, a later date, or not started) nothing opens.
+  for (const profile of [{ ...underSix, weaningStartDate: null }, { ...underSix, weaningStartDate: "2026-03-11" }, { ...underSix, stage: "prestart" as const }]) {
+    const plan = createBookBasedDayPlan(profile, ingredientCatalog, [], [], day, []);
+    assert.deepEqual([...kinds(plan), plan.recordOnly], ["hold", "hold", false], String(profile.weaningStartDate ?? profile.stage));
+  }
+
+  // A recorded reaction or texture difficulty is a genuine hold, not an age note, and stays on the meal card even
+  // though the day carries no book checks.
+  const review: MealHistoryEntry = { servedAt: new Date(2026, 2, 10, 9).toISOString(), ingredientIds: ["rice"], completion: "taste", mealType: "meal", reaction: "needsReview" };
+  const reviewPlan = createBookBasedDayPlan(underSix, ingredientCatalog, [testing("rice", 2)], [review], day, []);
+  assert.deepEqual([...kinds(reviewPlan), reviewPlan.recordOnly, reviewPlan.checks], ["hold", "hold", true, []]);
+  assert.match(reviewPlan.meals[0].reasons[0], /^확인이 필요한 반응이나 질감 어려움이 기록돼/);
+  const sameDay = createBookBasedDayPlan(underSix, ingredientCatalog, [testing("rice", 2)], [], day, [
+    { index: 1, ingredientIds: ["rice"], newExposureIngredientId: "rice", reaction: "textureDifficulty" },
+  ]);
+  assert.deepEqual(kinds(sameDay), ["recorded", "hold"]);
+
+  // A restricted rice, or another food already under observation, stays a hold too.
+  const restricted: ChildIngredientState[][] = [
+    [{ ingredientId: "rice", status: "suspectedReaction", testDay: null, exposureCount: 1, lastOfferedAt: null, lastReaction: "두드러기" }],
+    [{ ingredientId: "rice", status: "avoid", testDay: null, exposureCount: 0, lastOfferedAt: null }],
+    [{ ingredientId: "rice", status: "paused", testDay: 2, exposureCount: 1, lastOfferedAt: null }],
+    [testing("carrot", 1)],
+  ];
+  for (const states of restricted) {
+    assert.deepEqual(kinds(createBookBasedDayPlan(underSix, ingredientCatalog, states, [], day, [])), ["hold", "hold"], `${states[0].ingredientId}:${states[0].status}`);
+  }
+
+  // Foods with their own six-month caution and later foods stay out even when marked passed by hand.
+  const handMarked = ["carrot", "spinach", "napa-cabbage", "beet", "millet", "corn", "milk", "oatmeal", "beef"].map(passed);
+  const plan = createBookBasedDayPlan(underSix, ingredientCatalog, [...handMarked, testing("rice", 2)], [], day, []);
+  assert.deepEqual([...new Set(plan.meals.flatMap(mealOptions).flatMap(optionIds))], ["rice"]);
+  assert.deepEqual(plan.nextAdditions, []);
+  assert.equal(chooseNextIngredient(underSix, ingredientCatalog, [], [], day), null, "the planner itself still introduces nothing before six months");
+
+  // The record-only day follows the real age, not the catalog: a family food with a lower minimum age that is blocked by
+  // its own state keeps the actual rice day free of book claims, and later foods alone never make six months record-only.
+  const earlyCustom: IngredientDefinition = { ...ingredientById.get("oatmeal")!, id: "custom-early-grain", name: "우리집 미음", minimumAgeMonths: 4, introductionPriority: 70 };
+  const withCustom = createBookBasedDayPlan(underSix, [...ingredientCatalog, earlyCustom], [{ ingredientId: earlyCustom.id, status: "avoid", testDay: null, exposureCount: 0, lastOfferedAt: null }], [], day, []);
+  assert.deepEqual([...kinds(withCustom), withCustom.recordOnly, withCustom.checks, withCustom.summaryReasons], ["actual", "actual", true, [], []]);
+  const laterFoodsOnly = ingredientCatalog.filter((item) => (item.minimumAgeMonths ?? 6) > 6);
+  assert.equal(createBookBasedDayPlan({ ...underSix, ageMonths: 6 }, laterFoodsOnly, [], [], day, []).recordOnly, false);
 });
