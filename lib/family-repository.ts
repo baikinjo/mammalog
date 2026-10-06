@@ -6,6 +6,7 @@ import type {
   IngredientDefinition,
   MealHistoryEntry,
 } from "./domain";
+import { completedCalendarMonths, localDateId } from "./calendar-date";
 import { ingredientById } from "./ingredient-catalog";
 import { getSupabaseClient } from "./supabase-client";
 
@@ -373,6 +374,7 @@ export async function loadCustomIngredients(householdId: string): Promise<Ingred
 
   return (data ?? []).map((row) => {
     const template = ingredientById.get(row.asset_id ?? "");
+    const minimumAgeMonths = row.minimum_age_months ?? template?.minimumAgeMonths ?? 6;
     return {
       id: row.id,
       name: row.name,
@@ -382,7 +384,9 @@ export async function loadCustomIngredients(householdId: string): Promise<Ingred
       foodGroup: row.food_group ?? template?.foodGroup,
       introductionGroup: row.introduction_group ?? template?.introductionGroup ?? "other",
       minimumStage: row.minimum_stage ?? template?.minimumStage ?? "initial",
-      minimumAgeMonths: row.minimum_age_months ?? template?.minimumAgeMonths ?? 6,
+      minimumAgeMonths,
+      // The template's stage-start age carries over only while the stored age is still exactly that age.
+      minimumAgeIsStageStart: Boolean(template?.minimumAgeIsStageStart) && minimumAgeMonths === template?.minimumAgeMonths,
       introductionPriority: row.introduction_priority,
       color: row.color ?? template?.color,
       allergen: row.allergen ?? template?.allergen ?? false,
@@ -771,8 +775,9 @@ export async function updateFamilyMealRecord(
 }
 
 function mapChildRow(row: ChildRow): BabyProfile {
-  const birthDate = new Date(`${row.birth_date}T00:00:00`);
-  const ageMonths = Math.max(0, Math.floor((Date.now() - birthDate.getTime()) / (30.4375 * 86_400_000)));
+  // Completed calendar months on today's local date, so the age turns over on the birthday itself (also for month-end
+  // birthdays) rather than after an average month length.
+  const ageMonths = completedCalendarMonths(row.birth_date, localDateId(new Date())) ?? 0;
   const storedSkills = row.development_skills ?? {};
   const storedMealTimes = Array.isArray(storedSkills.mealTimes)
     ? storedSkills.mealTimes.filter((time: unknown): time is string => typeof time === "string")

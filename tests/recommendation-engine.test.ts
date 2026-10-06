@@ -11,6 +11,7 @@ import {
   createInitialMealSuggestion,
   hasStartReadiness,
   inferWeaningStage,
+  initialStartAgeDate,
   isActualMeal,
   isHeldMeal,
   mealOptions,
@@ -1100,4 +1101,196 @@ test("before six months only rice can be recorded and every other hold and food 
   assert.deepEqual([...kinds(withCustom), withCustom.recordOnly, withCustom.checks, withCustom.summaryReasons], ["actual", "actual", true, [], []]);
   const laterFoodsOnly = ingredientCatalog.filter((item) => (item.minimumAgeMonths ?? 6) > 6);
   assert.equal(createBookBasedDayPlan({ ...underSix, ageMonths: 6 }, laterFoodsOnly, [], [], day, []).recordOnly, false);
+});
+
+// A fictitious child born 2026-05-20: six calendar months on 2026-11-20, so the early-start window is 2026-11-13..20.
+const graceChild: BabyProfile = { ...baseProfile, ageMonths: 5, birthDate: "2026-05-20", mealsPerDay: 2, weaningStartDate: "2026-11-18" };
+const graceDay = (day: number, hour = 10) => new Date(2026, 10, day, hour);
+const CAUTIONED_AT_SIX = ["carrot", "spinach", "napa-cabbage", "beet"];
+const isFullBookDay = (plan: DailyRecommendation) => !plan.recordOnly
+  && plan.meals.every((meal) => !isActualMeal(meal) && !isHeldMeal(meal) && meal.preparationSteps.length > 0);
+const restricted = (ingredientId: string, status: ChildIngredientState["status"]): ChildIngredientState => (
+  { ingredientId, status, testDay: null, exposureCount: 1, lastOfferedAt: null }
+);
+
+test("a start in the seven days before the six-month birthday gets the full initial plan before six months", () => {
+  // Two days early: the same full plan a six-month-old gets that day, while the age itself stays five months.
+  const plan = createBookBasedDayPlan(graceChild, ingredientCatalog, [], [], graceDay(18), []);
+  assert.deepEqual(plan, createBookBasedDayPlan({ ...graceChild, ageMonths: 6 }, ingredientCatalog, [], [], graceDay(18), []));
+  assert.equal(initialStartAgeDate(graceChild), "2026-11-20");
+  assert.deepEqual([plan.recordOnly, plan.currentTrial?.id, plan.trialDay], [false, "rice", 1]);
+  const [first, second] = plan.meals;
+  assert.deepEqual(
+    [first.title, first.bookReference, typeof first.textureMm, first.items.map((item) => [item.ingredient.id, item.isNewExposure])],
+    ["쌀죽", "책 p.70", "number", [["rice", true]]],
+  );
+  assert.ok(first.servingGuide && first.textureGuide && first.servingMode && first.preparationSteps.length && first.storageGuide);
+  assert.deepEqual(second.items.map((item) => [item.ingredient.id, item.isNewExposure]), [["rice", false]], "one exposure a day");
+  assert.ok(plan.checks.length && plan.safetyNotes.length && plan.developmentTask && plan.summaryReasons.length);
+  assert.equal(plan.checks.find((check) => check.id === "texture")?.met, true);
+  assert.ok(plan.nextAdditions.length && plan.nextAdditions.every((addition) => !CAUTIONED_AT_SIX.includes(addition.ingredient.id)));
+  assert.equal(chooseNextIngredient(graceChild, ingredientCatalog, [], [], graceDay(18))?.id, "rice");
+});
+
+test("the early-start window counts calendar days to the six-month birthday with both ends included", () => {
+  const planFor = (start: string, day: number, ageMonths = 5) =>
+    createBookBasedDayPlan({ ...graceChild, weaningStartDate: start, ageMonths }, ingredientCatalog, [], [], graceDay(day), []);
+  assert.ok(isFullBookDay(planFor("2026-11-13", 13)), "seven days early");
+  const eightEarly = planFor("2026-11-12", 12);
+  assert.deepEqual([eightEarly.recordOnly, eightEarly.meals.map((meal) => meal.optionId)], [true, ["actual:1", "actual:2"]], "eight days early");
+  assert.equal(eightEarly.meals[0].reasons[0], "시작일이 만 6개월이 되는 11월 20일보다 7일 넘게 일러서, 그 전까지는 책 추천 메뉴와 제공량·질감·조리 안내를 보여주지 않아요.");
+  assert.deepEqual([eightEarly.checks, eightEarly.safetyNotes, eightEarly.developmentTask, eightEarly.summaryReasons, eightEarly.nextAdditions], [[], [], "", [], []]);
+  // A start before the window stays outside it on the days that fall inside it.
+  for (const day of [13, 16, 19]) assert.equal(planFor("2026-11-10", day).meals.every(isActualMeal), true, `day ${day}`);
+  // Before the confirmed start nothing opens.
+  const beforeStart = planFor("2026-11-18", 17);
+  assert.deepEqual([beforeStart.recordOnly, beforeStart.meals.every(isHeldMeal)], [false, true]);
+  assert.equal(chooseNextIngredient(graceChild, ingredientCatalog, [], [], graceDay(17)), null);
+  // The birthday is the window's last day, and from it on the age rules apply to every start.
+  assert.ok(isFullBookDay(planFor("2026-11-20", 20)), "a start on the birthday");
+  assert.ok(isFullBookDay(planFor("2026-11-10", 20, 6)), "an earlier start at six months");
+  assert.ok(isFullBookDay(planFor("2026-11-10", 26, 6)), "after six months");
+});
+
+test("the window follows the calendar across month ends, leap years and daylight-saving changes", () => {
+  const previousTimeZone = process.env.TZ;
+  process.env.TZ = "America/Los_Angeles";
+  try {
+    const qualifies = (birthDate: string, start: string, at: Date) =>
+      isFullBookDay(createBookBasedDayPlan({ ...graceChild, birthDate, weaningStartDate: start }, ingredientCatalog, [], [], at, []));
+    // Born on 08-31: six months on 02-28, or 02-29 in a leap year.
+    assert.equal(qualifies("2026-08-31", "2027-02-21", new Date(2027, 1, 21, 10)), true);
+    assert.equal(qualifies("2026-08-31", "2027-02-20", new Date(2027, 1, 21, 10)), false);
+    assert.equal(qualifies("2027-08-31", "2028-02-22", new Date(2028, 1, 22, 10)), true);
+    assert.equal(qualifies("2027-08-31", "2028-02-21", new Date(2028, 1, 22, 10)), false);
+    // Windows that span the end of daylight saving (2026-11-01) and its start (2027-03-14): seven calendar days are
+    // seven days although they last an hour more or less, and minutes into or before midnight still count as that day.
+    assert.equal(qualifies("2026-05-02", "2026-10-26", new Date(2026, 9, 26, 0, 5)), true);
+    assert.equal(qualifies("2026-05-02", "2026-10-25", new Date(2026, 9, 26, 0, 5)), false);
+    assert.equal(qualifies("2026-09-15", "2027-03-08", new Date(2027, 2, 8, 23, 55)), true);
+    assert.equal(qualifies("2026-09-15", "2027-03-07", new Date(2027, 2, 8, 23, 55)), false);
+  } finally {
+    if (previousTimeZone === undefined) delete process.env.TZ;
+    else process.env.TZ = previousTimeZone;
+  }
+});
+
+test("no window without a real birth date, and none for a corrected age", () => {
+  const day = graceDay(18);
+  const noBirthDate = createBookBasedDayPlan({ ...graceChild, birthDate: undefined }, ingredientCatalog, [], [], day, []);
+  assert.deepEqual([noBirthDate.recordOnly, noBirthDate.meals[0].reasons[0]], [true, "만 6개월 전이라 책 추천 메뉴와 제공량·질감·조리 안내는 보여주지 않아요."]);
+  for (const birthDate of ["2026-02-30", "2026-5-20", "2026-05-20T00:00"]) {
+    const invalid = createBookBasedDayPlan({ ...graceChild, birthDate }, ingredientCatalog, [], [], day, []);
+    assert.deepEqual(
+      [invalid.recordOnly, invalid.meals[0].reasons[0]],
+      [true, "생년월일을 날짜로 확인할 수 없어 만 6개월 전에는 책 추천 메뉴와 제공량·질감·조리 안내를 보여주지 않아요."],
+      birthDate,
+    );
+    assert.equal(initialStartAgeDate({ ...graceChild, birthDate }), null);
+  }
+  // A corrected age is stored without a date, so the chronological birthday never opens the window for it.
+  const correctedChild = { ...graceChild, correctedAgeMonths: 5 };
+  const corrected = createBookBasedDayPlan(correctedChild, ingredientCatalog, [], [], day, []);
+  assert.deepEqual([corrected.recordOnly, corrected.meals[0].reasons[0]], [true, "교정 연령으로 만 6개월 전이라 책 추천 메뉴와 제공량·질감·조리 안내는 보여주지 않아요."]);
+  assert.equal(initialStartAgeDate(correctedChild), null);
+  assert.equal(chooseNextIngredient(correctedChild, ingredientCatalog, [], [], day), null);
+});
+
+test("the early start opens only foods without an age of their own and every other block stays", () => {
+  const day = graceDay(18);
+  // Foods with their own six-month caution and later foods stay out even when marked passed by hand.
+  const strictOrLater = [...CAUTIONED_AT_SIX, "millet", "corn", "milk", "mackerel"];
+  const plan = createBookBasedDayPlan(graceChild, ingredientCatalog, [...[...strictOrLater, "oatmeal", "beef"].map(passed), testing("rice", 2)], [], day, []);
+  const offered = new Set(plan.meals.flatMap(mealOptions).flatMap(optionIds));
+  assert.ok(offered.has("rice") && offered.has("beef"), [...offered].join());
+  assert.deepEqual(strictOrLater.filter((id) => offered.has(id)), []);
+  assert.ok(plan.nextAdditions.every((addition) => !strictOrLater.includes(addition.ingredient.id)));
+  // The introduction order skips the cautioned leafy foods until six months.
+  const leafyBlocked = [passed("rice"), passed("beef"), ...["cabbage", "bokchoy", "kale"].map((id) => restricted(id, "avoid"))];
+  assert.ok(!CAUTIONED_AT_SIX.includes(chooseNextIngredient(graceChild, ingredientCatalog, leafyBlocked, [], day)?.id ?? ""));
+  assert.equal(chooseNextIngredient({ ...graceChild, ageMonths: 6 }, ingredientCatalog, leafyBlocked, [], day)?.id, "spinach");
+  // A food with no stage-start provenance keeps its six months.
+  const unmarked: IngredientDefinition = { ...ingredientById.get("oatmeal")!, id: "custom-unmarked", minimumAgeIsStageStart: undefined };
+  assert.equal(chooseNextIngredient(graceChild, [ingredientById.get("rice")!, unmarked], [passed("rice")], [], day), null);
+  assert.equal(chooseNextIngredient({ ...graceChild, ageMonths: 6 }, [ingredientById.get("rice")!, unmarked], [passed("rice")], [], day)?.id, unmarked.id);
+
+  // A recorded reaction is a genuine hold, and a restricted rice is never served.
+  const review: MealHistoryEntry = { servedAt: graceDay(18, 9).toISOString(), ingredientIds: ["rice"], completion: "taste", mealType: "meal", reaction: "needsReview" };
+  const held = createBookBasedDayPlan(graceChild, ingredientCatalog, [testing("rice", 2)], [review], graceDay(18, 12), []);
+  assert.deepEqual([held.recordOnly, held.meals.every(isHeldMeal), held.nextAdditions], [false, true, []]);
+  assert.match(held.meals[0].reasons[0], /^확인이 필요한 반응이나 질감 어려움이 기록돼/);
+  for (const status of ["suspectedReaction", "avoid", "paused", "locked"] as const) {
+    const blocked = createBookBasedDayPlan(graceChild, ingredientCatalog, [restricted("rice", status)], [], day, []);
+    assert.ok(!blocked.meals.flatMap(mealOptions).some((meal) => optionIds(meal).includes("rice") || isActualMeal(meal)), status);
+  }
+  // One observation at a time: a cautioned food under observation by hand holds the day instead of opening another.
+  const carrotTest = createBookBasedDayPlan(graceChild, ingredientCatalog, [testing("carrot", 1)], [], day, []);
+  assert.deepEqual([carrotTest.currentTrial, carrotTest.meals.every(isHeldMeal)], [null, true]);
+  // The weekly fish cap still applies.
+  const fishMeals: MealHistoryEntry[] = [13, 16].map((date) => ({ servedAt: graceDay(date).toISOString(), ingredientIds: ["rice", "whitefish"], completion: "half", mealType: "meal" }));
+  const fishPlan = createBookBasedDayPlan(graceChild, ingredientCatalog, ["rice", "beef", "whitefish"].map(passed), fishMeals, day, []);
+  assert.ok(!fishPlan.meals.flatMap(mealOptions).some((meal) => hasGroup(meal, "fish")));
+});
+
+test("rice recorded directly before the window applied continues as the book plan without resetting its observation", () => {
+  // The deployed direct record already saved today's first rice and moved the observation to day 2.
+  const states = [testing("rice", 2)];
+  const direct = {
+    index: 1, ingredientIds: ["rice"], newExposureIngredientId: "rice", reaction: "none" as const, title: "쌀죽", time: "09:00",
+    textureMm: null, servingGuide: "", textureGuide: "", servingMode: "", reasons: ["만 6개월 전이라 책 추천 메뉴와 제공량·질감·조리 안내는 보여주지 않아요."],
+  };
+  const history: MealHistoryEntry[] = [{ servedAt: graceDay(18, 9).toISOString(), ingredientIds: ["rice"], completion: "quarter", mealType: "meal", reaction: "none" }];
+  const sameDay = createBookBasedDayPlan(graceChild, ingredientCatalog, states, history, graceDay(18, 12), [direct]);
+  const [stored, next] = sameDay.meals;
+  assert.deepEqual(
+    [stored.optionId, stored.title, stored.textureMm, stored.servingGuide, stored.preparationSteps, stored.bookReference, stored.reasons],
+    ["recorded:1", "쌀죽", undefined, "", [], undefined, direct.reasons],
+    "the direct record is shown as it was stored",
+  );
+  assert.deepEqual(next.items.map((item) => [item.ingredient.id, item.isNewExposure]), [["rice", false]], "no second exposure today");
+  assert.ok(!sameDay.recordOnly && next.preparationSteps.length && typeof next.textureMm === "number");
+  // The current book meal for that slot, for reference only and planned from the recorded foods, is the same rice menu.
+  const reference = createBookBasedDayPlan(graceChild, ingredientCatalog.filter((item) => item.id === "rice"), states, history, graceDay(18, 12), []);
+  assert.deepEqual([reference.meals[0].title, reference.meals[0].bookReference, optionIds(reference.meals[0])], ["쌀죽", "책 p.70", ["rice"]]);
+  // The next day the observation goes on at day 2 as the book's rice menu.
+  const nextDay = createBookBasedDayPlan(graceChild, ingredientCatalog, states, history, graceDay(19), []);
+  assert.deepEqual([nextDay.currentTrial?.id, nextDay.trialDay, nextDay.meals[0].bookReference, nextDay.meals.some(isActualMeal)], ["rice", 2, "책 p.70", false]);
+});
+
+test("the current guide beside a direct record of passed rice is the book's rice planned from the recorded foods", () => {
+  // Direct records on 11-14..16 passed rice on its third observation, and 11-17's direct record was the familiar rice.
+  // Each of those one-meal days is fully recorded.
+  const profile: BabyProfile = { ...graceChild, mealsPerDay: 1, weaningStartDate: "2026-11-14" };
+  const riceMeal = (date: number): MealHistoryEntry => ({ servedAt: graceDay(date, 9).toISOString(), ingredientIds: ["rice"], completion: "quarter", mealType: "meal", reaction: "none" });
+  for (const day of [16, 17]) {
+    const history = [14, 15, 16, 17].filter((date) => date <= day).map(riceMeal);
+    const evening = graceDay(day, 18);
+    // Replanned with every food, the day's one meal introduces the next food instead of the recorded rice.
+    const everyFood = createBookBasedDayPlan(profile, ingredientCatalog, [passed("rice")], history, evening, []);
+    assert.ok(mealOptions(everyFood.meals[0]).every((option) => option.items.some((item) => item.isNewExposure && item.ingredient.id === "beef")), `11-${day}`);
+    // Planned from the recorded foods alone it is the book's rice as a familiar meal at the current texture.
+    const reference = createBookBasedDayPlan(profile, ingredientCatalog.filter((item) => item.id === "rice"), [passed("rice")], history, evening, []);
+    const [rice, ...others] = mealOptions(reference.meals[0]);
+    assert.deepEqual(
+      [reference.currentTrial, others.length, rice.title, rice.bookReference, rice.textureMm, rice.items.map((item) => [item.ingredient.id, item.isNewExposure])],
+      [null, 0, "쌀죽", "책 p.70", 1, [["rice", false]]],
+      `11-${day}`,
+    );
+    assert.ok(rice.servingGuide && rice.textureGuide && rice.servingMode && rice.preparationSteps.length && rice.storageGuide);
+  }
+});
+
+test("the prestart preview is unchanged by the start window and never stands in for a confirmed start", () => {
+  const prestart: BabyProfile = { ...graceChild, stage: "prestart", mealsPerDay: 1 };
+  const withoutDates: BabyProfile = { ...prestart, birthDate: undefined, weaningStartDate: null };
+  assert.deepEqual(createInitialMealSuggestion(prestart, ingredientCatalog, [], []), createInitialMealSuggestion(withoutDates, ingredientCatalog, [], []));
+  // The app's preview assumes six months (corrected age included), so its plan never depends on the dates.
+  const preview = (profile: BabyProfile): BabyProfile => ({ ...profile, stage: "initial", ageMonths: 6, correctedAgeMonths: 6, mealsPerDay: 1, snacksPerDay: 0 });
+  assert.deepEqual(
+    createBookBasedDayPlan(preview(prestart), ingredientCatalog, [], [], graceDay(10), []),
+    createBookBasedDayPlan(preview(withoutDates), ingredientCatalog, [], [], graceDay(10), []),
+  );
+  // The real prestart child is not in the window even on its planned start: the start is not confirmed.
+  const real = createBookBasedDayPlan(prestart, ingredientCatalog, [], [], graceDay(18), []);
+  assert.deepEqual([real.recordOnly, real.meals.every(isHeldMeal)], [false, true]);
 });

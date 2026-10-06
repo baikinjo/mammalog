@@ -3,6 +3,7 @@ import {
   conditionGuidance,
   getStageGuide,
 } from "./book-knowledge";
+import { addCalendarMonths, calendarDaysBetween } from "./calendar-date";
 import {
   menuInstruction,
   menusForStage,
@@ -76,6 +77,41 @@ function isoDate(date: Date): string {
 
 function ageForRules(profile: BabyProfile): number {
   return profile.correctedAgeMonths ?? profile.ageMonths;
+}
+
+/** A confirmed initial start this many calendar days or fewer before the six-month birthday opens the initial stage early. */
+export const EARLY_START_WINDOW_DAYS = 7;
+
+/**
+ * The calendar date on which the age rules reach the initial stage's start age (six months): the six-month birthday.
+ * Null without a valid birth date, and when a corrected age is set, since a corrected age is stored without a date.
+ */
+export function initialStartAgeDate(profile: BabyProfile): string | null {
+  if (profile.correctedAgeMonths != null || !profile.birthDate) return null;
+  return addCalendarMonths(profile.birthDate, getStageGuide("initial").ageMonths[0]);
+}
+
+/**
+ * Whether the family confirmed an initial start no more than seven calendar days before the six-month birthday (the
+ * start and the birthday themselves included) and `planDate` is on or after that start. Such a family gets the initial
+ * stage from its start: foods whose only age limit is the stage start age count as reached. A start earlier than the
+ * window never qualifies, not even once the calendar reaches the window.
+ */
+function earlyStartGrace(profile: BabyProfile, planDate: string): boolean {
+  const ageDate = initialStartAgeDate(profile);
+  const start = profile.weaningStartDate;
+  if (profile.stage !== "initial" || !ageDate || !start) return false;
+  const daysEarly = calendarDaysBetween(start, ageDate);
+  return daysEarly != null && daysEarly >= 0 && daysEarly <= EARLY_START_WINDOW_DAYS && start <= planDate;
+}
+
+/** Whether the age rules allow `ingredient` on `today`, counting a qualifying early start (see `earlyStartGrace`). */
+function reachesMinimumAge(profile: BabyProfile, ingredient: IngredientDefinition, today: Date): boolean {
+  const minimumAge = ingredient.minimumAgeMonths ?? 6;
+  if (minimumAge <= ageForRules(profile)) return true;
+  return Boolean(ingredient.minimumAgeIsStageStart)
+    && minimumAge <= getStageGuide("initial").ageMonths[0]
+    && earlyStartGrace(profile, isoDate(today));
 }
 
 function daysSince(date: string | null | undefined, today: Date): number {
@@ -198,11 +234,12 @@ function hardBlocked(
   ingredient: IngredientDefinition,
   state: ChildIngredientState | undefined,
   fishCount: number,
+  today: Date,
   ignoreMinimumAge = false,
 ): boolean {
   if (["avoid", "suspectedReaction", "paused", "locked"].includes(state?.status ?? "")) return true;
   if (stageRank[ingredient.minimumStage] > stageRank[inferWeaningStage(profile)]) return true;
-  if (!ignoreMinimumAge && (ingredient.minimumAgeMonths ?? 6) > ageForRules(profile)) return true;
+  if (!ignoreMinimumAge && !reachesMinimumAge(profile, ingredient, today)) return true;
   if (ingredient.foodGroup === "fish" && fishCount >= (ingredient.frequencyCap7Days ?? 2)) return true;
   const tags = new Set(ingredient.tags ?? []);
   if (profile.temporaryCondition === "mouthPain" && tags.has("acidic")) return true;
@@ -254,7 +291,7 @@ function rankIntroductionCandidates(
 
   const candidates = definitions.filter((item) => {
     const state = stateById.get(item.id);
-    if (hardBlocked(profile, item, state, fishCount)) return false;
+    if (hardBlocked(profile, item, state, fishCount, today)) return false;
     return !state || state.status === "ready" || state.status === "rejected";
   });
 
@@ -295,7 +332,7 @@ export function chooseNextIngredient(
   if (activeTest) {
     const activeIngredient = definitions.find((item) => item.id === activeTest.ingredientId);
     const fishCount = countRecentFish(definitions, history, today);
-    return activeIngredient && !hardBlocked(profile, activeIngredient, activeTest, fishCount)
+    return activeIngredient && !hardBlocked(profile, activeIngredient, activeTest, fishCount, today)
       ? activeIngredient
       : null;
   }
@@ -458,7 +495,7 @@ function allowedPassedIngredients(
   const fishCount = countRecentFish(definitions, history, today);
   return definitions.filter((item) => {
     const state = stateById.get(item.id);
-    return state?.status === "passed" && !hardBlocked(profile, item, state, fishCount);
+    return state?.status === "passed" && !hardBlocked(profile, item, state, fishCount, today);
   });
 }
 
@@ -1053,23 +1090,27 @@ export function createBookBasedDayPlan(
     currentTrial = null;
   }
   const repeatableRice = currentTrial?.id === FIRST_TRIAL_GRAIN_ID ? currentTrial : null;
-  // Book menus start at six months (corrected age when set). Once the family has confirmed an initial-stage start on
-  // or before this day, the rice they actually give a younger child can still be recorded: the first meal records the
-  // rice observation with the usual trial rules and other meals record the same rice again. Nothing else is unlocked,
-  // and these meals carry no menu, serving, texture or cooking guidance.
+  // Book menus start at six months (corrected age when set), or from a confirmed initial start in the seven days before
+  // the six-month birthday. Once the family has confirmed an earlier initial start on or before this day, the rice they
+  // actually give a younger child can still be recorded: the first meal records the rice observation with the usual
+  // trial rules and other meals record the same rice again. Nothing else is unlocked, and these meals carry no menu,
+  // serving, texture or cooking guidance.
   const rice = definitionById.get(FIRST_TRIAL_GRAIN_ID);
   const riceState = states.find((state) => state.ingredientId === FIRST_TRIAL_GRAIN_ID);
   const startConfirmed = profile.stage === "initial"
     && Boolean(profile.weaningStartDate && profile.weaningStartDate <= planDate);
-  // Before the initial stage's start age (six months, corrected age when set) a confirmed start gives a record-only day.
-  const recordOnly = startConfirmed && ageForRules(profile) < getStageGuide("initial").ageMonths[0];
+  // Before the initial stage's start age (six months, corrected age when set) a confirmed start gives a record-only day,
+  // unless that start was in the seven days before the six-month birthday.
+  const recordOnly = startConfirmed
+    && ageForRules(profile) < getStageGuide("initial").ageMonths[0]
+    && !earlyStartGrace(profile, planDate);
   const actualRice = rice
-    && startConfirmed
+    && recordOnly
     && !reviewHold
     && !currentTrial
     && !passed.length
     && (rice.minimumAgeMonths ?? 6) > ageForRules(profile)
-    && !hardBlocked(profile, rice, riceState, priorFish, true)
+    && !hardBlocked(profile, rice, riceState, priorFish, today, true)
     && states.every((state) => state.status !== "testing" || state.ingredientId === rice.id)
     ? rice
     : null;
@@ -1138,6 +1179,17 @@ export function createBookBasedDayPlan(
     : currentTrial && index !== trialMealIndex
       ? `처음 먹이는 재료(${currentTrial.name})는 첫 끼에서만 관찰해요. 지금 줄 수 있는 통과한 재료가 없어 이번 끼니는 쉬어요.`
       : "지금 줄 수 있는 재료가 없어 이번 끼니는 쉬어요. 재료 탭에서 막힌 재료의 상태를 확인해주세요.");
+  // Why a record-only day carries no book guidance: a corrected age (stored without a date), a start more than seven
+  // days before the six-month birthday, or a birth date that is not a real calendar date.
+  const ageDate = initialStartAgeDate(profile);
+  const daysEarly = ageDate && profile.weaningStartDate ? calendarDaysBetween(profile.weaningStartDate, ageDate) : null;
+  const recordOnlyReason = profile.correctedAgeMonths != null
+    ? "교정 연령으로 만 6개월 전이라 책 추천 메뉴와 제공량·질감·조리 안내는 보여주지 않아요."
+    : ageDate && daysEarly != null && daysEarly > EARLY_START_WINDOW_DAYS
+      ? `시작일이 만 6개월이 되는 ${Number(ageDate.slice(5, 7))}월 ${Number(ageDate.slice(8, 10))}일보다 ${EARLY_START_WINDOW_DAYS}일 넘게 일러서, 그 전까지는 책 추천 메뉴와 제공량·질감·조리 안내를 보여주지 않아요.`
+      : profile.birthDate && !ageDate
+        ? "생년월일을 날짜로 확인할 수 없어 만 6개월 전에는 책 추천 메뉴와 제공량·질감·조리 안내를 보여주지 않아요."
+        : "만 6개월 전이라 책 추천 메뉴와 제공량·질감·조리 안내는 보여주지 않아요.";
   const actualRiceMeal = (food: IngredientDefinition, index: number, time: string): PlannedMeal => {
     const trial = index === trialMealIndex ? actualTrial : null;
     return {
@@ -1153,7 +1205,7 @@ export function createBookBasedDayPlan(
       preparationSteps: [],
       storageGuide: "",
       reasons: [
-        `${profile.correctedAgeMonths != null ? "교정 연령으로 만 6개월 전이라" : "만 6개월 전이라"} 책 추천 메뉴와 제공량·질감·조리 안내는 보여주지 않아요.`,
+        recordOnlyReason,
         "가족이 확정한 시작일부터 실제로 먹인 쌀죽을 기록하는 칸이에요. 먹이라거나 건너뛰라는 안내가 아니니, 궁금한 점은 소아청소년과와 상의해주세요.",
         trial
           ? `기록하면 쌀 관찰 ${trialDay}/${guide.newFoodIntervalDays[1]}일째로 반영되고, 관찰 일수는 하루 첫 끼 기록으로만 늘어요.`
@@ -1307,7 +1359,8 @@ export function createBookBasedDayPlan(
     trialDay,
     meals,
     snacks,
-    // A day before six months carries no book check, texture, development or progression claim.
+    // A record-only day (before six months without a qualifying early start) carries no book check, texture,
+    // development or progression claim.
     checks: recordOnly ? [] : checks,
     safetyNotes: recordOnly ? [] : safetyNotes,
     developmentTask: recordOnly ? "" : developmentTaskFor(profile, stage),

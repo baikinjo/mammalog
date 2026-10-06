@@ -2,7 +2,7 @@ import type { IngredientDefinition } from "./domain";
 
 type IngredientSeed = Omit<
   IngredientDefinition,
-  "emoji" | "minimumStage" | "introductionPriority"
+  "emoji" | "minimumStage" | "introductionPriority" | "minimumAgeIsStageStart"
 > & {
   emoji?: string;
   minimumStage?: IngredientDefinition["minimumStage"];
@@ -17,6 +17,8 @@ function ingredient(seed: IngredientSeed): IngredientDefinition {
     minimumStage: "initial",
     introductionPriority: 100,
     minimumAgeMonths: 6,
+    // Without an age of its own a food starts with the initial stage; an explicit age (even six months) is the food's.
+    minimumAgeIsStageStart: seed.minimumAgeMonths === undefined,
     sourcePages: COMMON_FOOD_PAGES,
     ...seed,
   };

@@ -26,13 +26,16 @@ import {
   ingredientDefinitions,
 } from "../lib/demo-data";
 import { getStageGuide } from "../lib/book-knowledge";
+import { calendarDaysBetween } from "../lib/calendar-date";
 import {
   applyEditedTrialOutcome,
   applyRepeatedTrialReaction,
   applyTrialOutcome,
   createBookBasedDayPlan,
   createInitialMealSuggestion,
+  EARLY_START_WINDOW_DAYS,
   hasStartReadiness,
+  initialStartAgeDate,
   isActualMeal,
   isHeldMeal,
   isRecordedMeal,
@@ -299,6 +302,8 @@ function customIngredientTraits(category: IngredientCategory, assetId: string) {
     introductionGroup: template?.introductionGroup ?? introductionGroupByCategory[category],
     minimumStage: template?.minimumStage ?? "initial",
     minimumAgeMonths: template?.minimumAgeMonths ?? 6,
+    // Only a template's own stage-start age follows an early start; without a template the age stays strict.
+    minimumAgeIsStageStart: template?.minimumAgeIsStageStart ?? false,
     color: template?.color,
     allergen: template?.allergen,
     allergenGroup: template?.allergenGroup,
@@ -574,12 +579,23 @@ function formatProfileStart(profile: BabyProfile): string {
 }
 
 function preparationCountdown(profile: BabyProfile): string {
+  const todayId = toDateId(new Date());
   if (profile.weaningStartDate) {
-    const days = Math.ceil((parseDateId(profile.weaningStartDate).getTime() - new Date().setHours(0, 0, 0, 0)) / 86_400_000);
-    if (days > 0) return `가족이 정한 시작일까지 ${days}일 남았어요.`;
+    const days = calendarDaysBetween(todayId, profile.weaningStartDate);
+    if (days != null && days > 0) return `가족이 정한 시작일까지 ${days}일 남았어요.`;
     if (days === 0) return "가족이 정한 시작일이에요. 준비 신호를 함께 확인해보세요.";
   }
-  const estimatedWeeks = Math.max(0, Math.round((6 - (profile.correctedAgeMonths ?? profile.ageMonths)) * 4.35));
+  // Calendar days to the six-month birthday; a corrected age is stored without a date, so it keeps the month estimate.
+  const sixMonthDate = initialStartAgeDate(profile);
+  const daysToSixMonths = sixMonthDate ? calendarDaysBetween(todayId, sixMonthDate) : null;
+  if (daysToSixMonths != null && daysToSixMonths > 0) {
+    return daysToSixMonths < 14
+      ? `만 6개월까지 ${daysToSixMonths}일 남았어요.`
+      : `만 6개월까지 약 ${Math.round(daysToSixMonths / 7)}주 남았어요.`;
+  }
+  const estimatedWeeks = daysToSixMonths != null
+    ? 0
+    : Math.max(0, Math.round((6 - (profile.correctedAgeMonths ?? profile.ageMonths)) * 4.35));
   return estimatedWeeks
     ? `만 6개월까지 약 ${estimatedWeeks}주 남았어요.`
     : hasStartReadiness(profile)
@@ -805,6 +821,31 @@ function TodayMeal({
   );
   const focusedIsHold = !focusedRecord && isHeldMeal(focusedMeal);
   const focusedIsActual = !focusedRecord && isActualMeal(focusedMeal);
+  // A meal recorded without a recommendation keeps no guidance of its own. Once the book's plan applies to the day (from
+  // six months, or from a start in the seven days before), the current book meal of the same foods is shown apart from
+  // that record. It is planned from those foods alone, so the day's next new food never takes their place, and it only
+  // shows a food as new while the day's own plan is observing that food. It is never stored, and the record keeps what
+  // it saved.
+  const currentGuide = useMemo((): PlannedMeal | null => {
+    if (!focusedRecord?.withoutRecommendation || bookPlan.recordOnly || profile.stage === "prestart") return null;
+    const adverse = (record: FamilyMealRecord) => ["needsReview", "textureDifficulty"].includes(historyReactionByReaction[record.reaction]);
+    if (todayRecords.some(adverse)) return null;
+    const reference = createBookBasedDayPlan(
+      planProfile,
+      ingredients.filter((ingredient) => focusedRecord.ingredientIds.includes(ingredient.id)),
+      ingredientStates,
+      mealHistory,
+      planDateFor(todayId),
+      recordedMealsOn(todayRecords.filter((record) => record.mealIndex !== focusedRecord.mealIndex), todayId),
+    );
+    const slot = reference.meals.find((meal) => meal.index === focusedRecord.mealIndex);
+    const foods = [...focusedRecord.ingredientIds].sort().join();
+    return (slot ? mealOptions(slot) : []).find((option) => !isHeldMeal(option)
+      && !isActualMeal(option)
+      && option.preparationSteps.length > 0
+      && option.items.every((item) => !item.isNewExposure || item.ingredient.id === bookPlan.currentTrial?.id)
+      && option.items.map((item) => item.ingredient.id).sort().join() === foods) ?? null;
+  }, [bookPlan.currentTrial, bookPlan.recordOnly, focusedRecord, ingredientStates, ingredients, mealHistory, planProfile, profile.stage, todayId, todayRecords]);
   const suggestion = useMemo(
     (): MealSuggestion => {
       if (profile.stage === "prestart") {
@@ -967,6 +1008,23 @@ function TodayMeal({
                 </ol>
                 {focusedMeal.bookReference && <p className="book-reference"><strong>책 메뉴</strong> {focusedMeal.bookReference}</p>}
                 <p><strong>보관</strong> {focusedMeal.storageGuide}</p>
+              </details>
+            )}
+
+            {currentGuide && (
+              <details className="reason-box cooking-guide current-guide">
+                <summary>지금 기준 {currentGuide.title} 안내 · 이 기록과 별개</summary>
+                <p>이 기록은 책 안내 없이 남긴 식사라 그대로 두고, 지금 적용되는 책 안내를 따로 보여드려요.</p>
+                <ul>
+                  <li><strong>제공량</strong> {currentGuide.servingGuide}</li>
+                  <li><strong>질감</strong> {currentGuide.textureGuide}</li>
+                  <li><strong>제공 방식</strong> {currentGuide.servingMode}</li>
+                </ul>
+                <ol>
+                  {currentGuide.preparationSteps.map((step) => <li key={step}>{step}</li>)}
+                </ol>
+                {currentGuide.bookReference && <p className="book-reference"><strong>책 메뉴</strong> {currentGuide.bookReference}</p>}
+                <p><strong>보관</strong> {currentGuide.storageGuide}</p>
               </details>
             )}
 
@@ -2100,6 +2158,13 @@ function IngredientSheet({
     : ingredient.chokingFormBlacklist?.length
       ? ingredient.chokingFormBlacklist.map((item) => `${item} 제외`).join(" · ")
       : "단계에 맞게 충분히 부드럽게 조리";
+  // A food that only waits for the initial stage opens from a start in the week before six months; a food's own
+  // six-month age does not.
+  const earlyStartNote = ingredient.minimumStage === "initial" && (ingredient.minimumAgeMonths ?? 6) === 6
+    ? ingredient.minimumAgeIsStageStart
+      ? ` (만 6개월 되기 전 ${EARLY_START_WINDOW_DAYS}일 안에 시작했다면 시작일부터)`
+      : " (일찍 시작했어도 만 6개월부터)"
+    : "";
 
   return (
     <div className="sheet-backdrop" role="presentation" onMouseDown={onClose}>
@@ -2115,7 +2180,7 @@ function IngredientSheet({
         <dl className="detail-list">
           <div><dt>책의 흐름</dt><dd>{guidance}</dd></div>
           {ingredient.allergenGroup && <div><dt>알레르기 주의</dt><dd>{allergenGroupLabels[ingredient.allergenGroup]} 관련 재료 · 다른 새 재료와 겹치지 않게 한 가지씩 기록해요.</dd></div>}
-          <div><dt>도입 시기</dt><dd>만 {ingredient.minimumAgeMonths ?? 6}개월부터 · {stageLabels[ingredient.minimumStage]}</dd></div>
+          <div><dt>도입 시기</dt><dd>만 {ingredient.minimumAgeMonths ?? 6}개월부터 · {stageLabels[ingredient.minimumStage]}{earlyStartNote}</dd></div>
           <div><dt>조리·안전</dt><dd>{preparation}</dd></div>
           {ingredient.frequencyCap7Days && <div><dt>빈도 제한</dt><dd>최근 7일 최대 {ingredient.frequencyCap7Days}회</dd></div>}
           <div><dt>현재 상태</dt><dd>{state ? ingredientStatusLabels[state.status] : "미도입"}{state?.status === "testing" ? ` · ${state.testDay ?? 1}/3일` : ""}</dd></div>
