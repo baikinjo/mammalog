@@ -363,12 +363,21 @@ export async function loadFamilyWorkspace(): Promise<FamilyWorkspace | null> {
 }
 
 export async function loadCustomIngredients(householdId: string): Promise<IngredientDefinition[]> {
+  return loadHouseholdCustomIngredients(householdId, true);
+}
+
+/** This family's foods removed from its list. Meals recorded with them keep them, so those records still name them. */
+export async function loadArchivedCustomIngredients(householdId: string): Promise<IngredientDefinition[]> {
+  return loadHouseholdCustomIngredients(householdId, false);
+}
+
+async function loadHouseholdCustomIngredients(householdId: string, active: boolean): Promise<IngredientDefinition[]> {
   const { data, error } = await getSupabaseClient()
     .from("ingredients")
     .select("*")
     .eq("household_id", householdId)
     .eq("is_custom", true)
-    .eq("is_active", true)
+    .eq("is_active", active)
     .order("created_at");
   if (error) throw error;
 
@@ -620,6 +629,18 @@ export async function loadDailyRecommendation(childId: string, date: string): Pr
   return (data?.output_snapshot as DailyRecommendation | undefined) ?? null;
 }
 
+/** Replaces a stored day snapshot's output, keeping the inputs it was computed from. */
+export async function updateDailyRecommendationOutput(childId: string, plan: DailyRecommendation): Promise<void> {
+  const { error } = await getSupabaseClient()
+    .from("daily_recommendations")
+    .update({ output_snapshot: plan })
+    .eq("child_id", childId)
+    .eq("recommendation_date", plan.date)
+    .select("id")
+    .single();
+  if (error) throw error;
+}
+
 export async function loadFamilyMealRecords(childId: string): Promise<FamilyMealRecord[]> {
   const { data, error } = await getSupabaseClient()
     .from("meal_plans")
@@ -658,7 +679,7 @@ export async function loadFamilyMealRecords(childId: string): Promise<FamilyMeal
   });
 }
 
-function roleForIngredient(ingredient: IngredientDefinition): string {
+function roleForIngredient(ingredient: Pick<IngredientDefinition, "category">): string {
   if (ingredient.category === "grain") return "base";
   if (["meat", "fish", "egg", "beans"].includes(ingredient.category)) return "protein";
   if (ingredient.category === "fruit") return "fruit";
@@ -772,6 +793,178 @@ export async function updateFamilyMealRecord(
     .select("id")
     .single();
   if (error) throw error;
+}
+
+/**
+ * Why a food correction was not saved. `recordChanged`: the record's foods were not the ones the family corrected, the
+ * record is gone, or another save changed the meal after it was read, so nothing was written. `notSaved`: a write failed
+ * and the meal was read back exactly as it was stored. `uncertain`: the meal could not be read back as it was or as
+ * corrected, so the stored foods have to be checked again.
+ */
+export class MealFoodCorrectionError extends Error {
+  constructor(readonly kind: "recordChanged" | "notSaved" | "uncertain", cause?: unknown) {
+    super(`meal food correction: ${kind}`, { cause });
+    this.name = "MealFoodCorrectionError";
+  }
+}
+
+export interface CorrectFamilyMealFoodsInput {
+  mealPlanId: string;
+  /** The foods the record held when the family opened it; nothing is written if the stored foods differ. */
+  expectedIngredientIds: string[];
+  /** The foods actually given. A food the meal already holds keeps its stored role; an added food needs its category. */
+  ingredients: Array<Pick<IngredientDefinition, "id"> & Partial<Pick<IngredientDefinition, "category">>>;
+  newExposureIngredientId: string | null;
+  title: string;
+  recommendationReasons: string[];
+}
+
+/** The fields a food correction rewrites, as stored on the meal. */
+type MealFoodFields = {
+  title: string;
+  serving_guide: string | null;
+  texture_guide: string | null;
+  serving_mode: string | null;
+  recommendation_version: string;
+  recommendation_reasons: unknown;
+};
+type StoredMealFoods = MealFoodFields & {
+  id: string;
+  updated_at: string;
+  meal_plan_items: Array<{ id: string; ingredient_id: string; role: string }> | null;
+};
+
+/**
+ * Replaces a recorded meal's foods with the ones the family actually gave and marks it as recorded without a book
+ * recommendation: the title and reasons describe the actual meal, and the book's serving, texture and serving-mode
+ * guidance is cleared. The date, slot, time, stage, texture and the log stay as recorded. The meal's fields are written
+ * first, and only if nobody changed the meal since it was read; then the new items next to the old ones, then the old
+ * items are removed. A write whose outcome is not known (it failed, or its reply was lost after it was made) is settled
+ * by reading the meal back, and a failure is only reported as `notSaved` once the meal reads back exactly as it was.
+ */
+export async function correctFamilyMealFoods(input: CorrectFamilyMealFoodsInput): Promise<void> {
+  const client = getSupabaseClient();
+  const { data: authData, error: authError } = await client.auth.getUser();
+  if (authError) throw authError;
+  if (!authData.user) throw new Error("로그인이 필요해요.");
+
+  const readMeal = async (): Promise<StoredMealFoods | null> => {
+    const { data, error } = await client
+      .from("meal_plans")
+      .select("id,title,serving_guide,texture_guide,serving_mode,recommendation_version,recommendation_reasons,updated_at,meal_plan_items(id,ingredient_id,role)")
+      .eq("id", input.mealPlanId)
+      .maybeSingle();
+    if (error) throw error;
+    return data as StoredMealFoods | null;
+  };
+  const stored = await readMeal();
+  const storedItems = stored?.meal_plan_items ?? [];
+  const foodSet = (ids: string[]) => JSON.stringify([...new Set(ids)].sort());
+  if (!stored || foodSet(storedItems.map((item) => item.ingredient_id)) !== foodSet(input.expectedIngredientIds)) {
+    throw new MealFoodCorrectionError("recordChanged");
+  }
+
+  const storedFields: MealFoodFields = {
+    title: stored.title,
+    serving_guide: stored.serving_guide,
+    texture_guide: stored.texture_guide,
+    serving_mode: stored.serving_mode,
+    recommendation_version: stored.recommendation_version,
+    recommendation_reasons: stored.recommendation_reasons,
+  };
+  const correctedFields: MealFoodFields = {
+    title: input.title,
+    serving_guide: "",
+    texture_guide: "",
+    serving_mode: "",
+    recommendation_version: WITHOUT_RECOMMENDATION_VERSION,
+    recommendation_reasons: input.recommendationReasons,
+  };
+  const fieldsKey = (fields: MealFoodFields) => JSON.stringify([
+    fields.title,
+    fields.serving_guide,
+    fields.texture_guide,
+    fields.serving_mode,
+    fields.recommendation_version,
+    fields.recommendation_reasons,
+  ]);
+  const storedRoles = new Map(storedItems.map((item) => [item.ingredient_id, item.role]));
+  // The new items get their ids here, so this save can tell them apart from every other item even when a reply is lost.
+  const newItems = input.ingredients.map((ingredient) => ({
+    id: crypto.randomUUID(),
+    meal_plan_id: input.mealPlanId,
+    ingredient_id: ingredient.id,
+    role: storedRoles.get(ingredient.id) ?? (ingredient.category ? roleForIngredient({ category: ingredient.category }) : "ingredient"),
+    is_new_exposure: ingredient.id === input.newExposureIngredientId,
+  }));
+  const oldIds = storedItems.map((item) => item.id);
+  const newIds = newItems.map((item) => item.id);
+  const correctedAt = new Date().toISOString();
+  const itemIdsOf = (meal: StoredMealFoods) => (meal.meal_plan_items ?? []).map((item) => item.id);
+  const holdsExactly = (meal: StoredMealFoods, ids: string[]) => {
+    const present = itemIdsOf(meal);
+    return present.length === ids.length && ids.every((id) => present.includes(id));
+  };
+  const isCorrected = (meal: StoredMealFoods | null) => Boolean(meal && fieldsKey(meal) === fieldsKey(correctedFields) && holdsExactly(meal, newIds));
+  const isAsStored = (meal: StoredMealFoods | null) => Boolean(meal && fieldsKey(meal) === fieldsKey(storedFields) && holdsExactly(meal, oldIds));
+
+  /**
+   * Settles a write whose outcome is not known. The meal is read back: holding exactly the corrected fields and this
+   * save's items it is saved, holding exactly the stored fields and items it was not changed. Anything else is undone only
+   * as far as it provably came from this save: its own items are removed only while every stored item is still there, so
+   * the meal never loses the foods it was recorded with, and its fields are put back only once those items are gone (so
+   * stored book guidance never describes foods it did not have) and only while they are still the ones this save wrote
+   * (so another save's update is never overwritten). Unless the meal then reads back as stored, the result is uncertain.
+   */
+  const settle = async (cause: unknown): Promise<void> => {
+    const current = await readMeal().catch(() => null);
+    if (isCorrected(current)) return;
+    if (isAsStored(current)) throw new MealFoodCorrectionError("notSaved", cause);
+    const currentIds = current ? itemIdsOf(current) : [];
+    const undoable = Boolean(current)
+      && oldIds.every((id) => currentIds.includes(id))
+      && currentIds.every((id) => oldIds.includes(id) || newIds.includes(id));
+    if (undoable) {
+      const ownIds = currentIds.filter((id) => newIds.includes(id));
+      const itemsUndone = !ownIds.length || await client
+        .from("meal_plan_items")
+        .delete()
+        .in("id", ownIds)
+        .select("id")
+        .then(({ data, error }) => !error && (data ?? []).length === ownIds.length);
+      if (itemsUndone && fieldsKey(current!) !== fieldsKey(storedFields)) {
+        await client
+          .from("meal_plans")
+          .update({ ...storedFields, updated_at: stored.updated_at })
+          .eq("id", input.mealPlanId)
+          .eq("updated_at", correctedAt);
+      }
+      if (isAsStored(await readMeal().catch(() => null))) throw new MealFoodCorrectionError("notSaved", cause);
+    }
+    throw new MealFoodCorrectionError("uncertain", cause);
+  };
+
+  const { data: patched, error: patchError } = await client
+    .from("meal_plans")
+    .update({ ...correctedFields, updated_at: correctedAt })
+    .eq("id", input.mealPlanId)
+    .eq("updated_at", stored.updated_at)
+    .select("id");
+  if (patchError) return settle(patchError);
+  // No row matched: another save changed the meal after it was read, and nothing was written.
+  if (!patched?.length) throw new MealFoodCorrectionError("recordChanged");
+
+  const { error: insertError } = await client.from("meal_plan_items").insert(newItems);
+  if (insertError) return settle(insertError);
+  if (!oldIds.length) return;
+
+  const { data: removed, error: removeError } = await client
+    .from("meal_plan_items")
+    .delete()
+    .in("id", oldIds)
+    .select("id");
+  // Fewer removed items than were read means another save changed this meal meanwhile.
+  if (removeError || (removed ?? []).length !== oldIds.length) return settle(removeError);
 }
 
 function mapChildRow(row: ChildRow): BabyProfile {

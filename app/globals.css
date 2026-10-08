@@ -638,6 +638,8 @@ button {
   color: white;
 }
 .schedule-kind { padding: 6px 8px; border-radius: 999px; background: var(--canvas); color: var(--ink-soft); font-size: 9px; font-weight: 700; }
+.daily-schedule-list small.schedule-held-record { color: var(--sage-deep); font-weight: 700; }
+.held-record-action { margin-top: 14px; }
 .safety-reasons { margin-bottom: 0; }
 
 .primary-action,
@@ -891,6 +893,10 @@ button {
 .setup-warning { margin: 0; padding: 12px 13px; border-radius: 13px; background: var(--apricot-soft); color: #7c533b; font-size: 10px; line-height: 1.65; }
 .family-data-warning { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
 .family-data-retry { flex: 0 0 auto; margin: -10px 0; padding: 14px 0; border: 0; background: transparent; color: inherit; font: inherit; font-weight: 700; text-decoration: underline; cursor: pointer; }
+.review-reminder { display: grid; gap: 10px; margin-bottom: 16px; font-size: 11px; }
+.review-reminder p { margin: 0; overflow-wrap: anywhere; }
+.review-reminder-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.review-reminder-actions button { min-height: 44px; max-width: 100%; padding: 0 12px; border: 1px solid rgba(124, 83, 59, 0.35); border-radius: 12px; background: var(--paper); color: #7c533b; font: inherit; font-weight: 700; overflow-wrap: anywhere; cursor: pointer; }
 .sync-divider { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 9px; color: var(--ink-soft); font-size: 9px; }
 .sync-divider::before,
 .sync-divider::after { height: 1px; background: var(--line); content: ""; }
@@ -1134,6 +1140,18 @@ button {
 .reaction-options input:checked + span { border-color: var(--sage); background: var(--sage-soft); color: var(--sage-deep); font-weight: 700; }
 
 .note-field { display: grid; margin: 26px 0 20px; }
+.actual-food-field { min-width: 0; }
+.actual-food-selected { display: flex; flex-wrap: wrap; gap: 8px; }
+.actual-food-selected button { display: inline-flex; min-height: 44px; max-width: 100%; align-items: center; gap: 7px; padding: 6px 12px 6px 8px; border: 1px solid rgba(80, 102, 78, 0.42); border-radius: 999px; background: var(--sage-soft); color: var(--sage-deep); font-size: 12px; font-weight: 700; text-align: left; cursor: pointer; }
+.actual-food-selected button span { min-width: 0; overflow-wrap: anywhere; }
+.actual-food-selected button > svg { flex: 0 0 auto; }
+.actual-food-message { margin: 10px 0 0; color: var(--ink-soft); font-size: 11px; line-height: 1.6; }
+.actual-food-message.is-error { color: #a04a2c; font-weight: 700; }
+.actual-food-picker { margin-top: 12px; }
+.actual-food-picker > summary { display: flex; min-height: 44px; align-items: center; color: var(--sage-deep); font-size: 12px; font-weight: 700; cursor: pointer; }
+.actual-food-picker .ingredient-filters { margin-top: 4px; }
+.actual-food-options { margin-top: 6px; }
+.actual-food-options span { max-width: 100%; overflow-wrap: anywhere; }
 .note-field textarea { resize: vertical; padding: 14px; border: 1px solid var(--line); border-radius: 16px; outline: 0; background: var(--canvas); color: var(--ink); font-size: 16px; line-height: 1.6; }
 .note-field textarea:focus { border-color: var(--sage); box-shadow: 0 0 0 3px rgba(110, 132, 107, 0.13); }
 

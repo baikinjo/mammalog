@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { ingredientById, ingredientCatalog } from "../lib/ingredient-catalog";
 import {
+  actualFoodObservation,
   applyEditedTrialOutcome,
   applyRepeatedTrialReaction,
   applyTrialOutcome,
   chooseNextIngredient,
+  correctedDaySnapshot,
   countRecentFish,
   createBookBasedDayPlan,
   createInitialMealSuggestion,
@@ -15,6 +17,7 @@ import {
   isActualMeal,
   isHeldMeal,
   mealOptions,
+  recordedMealSlot,
   resolveMealTimes,
 } from "../lib/recommendation-engine";
 import type {
@@ -1278,6 +1281,179 @@ test("the current guide beside a direct record of passed rice is the book's rice
     );
     assert.ok(rice.servingGuide && rice.textureGuide && rice.servingMode && rice.preparationSteps.length && rice.storageGuide);
   }
+});
+
+test("a meal recorded with other foods counts only the day's observation food, and only when it is the one unconfirmed food", () => {
+  const day = new Date(2026, 7, 4, 12);
+  const kinds = (result: ReturnType<typeof actualFoodObservation>) => [result.trial, result.repeat, result.uncounted];
+
+  // Rice day 2: the shown first meal is the rice observation.
+  const riceStates = [testing("rice", 2)];
+  const riceDay = createBookBasedDayPlan({ ...baseProfile, mealsPerDay: 2 }, ingredientCatalog, riceStates, [], day, []);
+  const riceMeal = riceDay.meals[0];
+  assert.deepEqual(riceMeal.items.map((item) => [item.ingredient.id, item.isNewExposure]), [["rice", true]]);
+  assert.deepEqual(kinds(actualFoodObservation(riceDay, riceMeal, ["rice"], riceStates)), ["rice", null, []], "rice as shown");
+  assert.deepEqual(
+    kinds(actualFoodObservation(riceDay, riceMeal, ["rice", "oatmeal"], riceStates)),
+    [null, null, ["rice", "oatmeal"]],
+    "rice and oatmeal together: two unconfirmed foods, neither counted",
+  );
+  assert.deepEqual(kinds(actualFoodObservation(riceDay, riceMeal, ["oatmeal"], riceStates)), [null, null, ["oatmeal"]], "rice replaced");
+
+  // Beef day 1 after rice and oatmeal passed: the shown first meal adds beef to familiar foods.
+  const beefStates = [passed("rice"), passed("oatmeal")];
+  const beefDay = createBookBasedDayPlan(baseProfile, ingredientCatalog, beefStates, [], day, []);
+  const beefMeal = beefDay.meals[0];
+  assert.equal(beefDay.currentTrial?.id, "beef");
+  assert.ok(beefMeal.items.some((item) => item.isNewExposure && item.ingredient.id === "beef"), optionIds(beefMeal).join());
+  assert.deepEqual(kinds(actualFoodObservation(beefDay, beefMeal, ["oatmeal", "beef"], beefStates)), ["beef", null, []], "a familiar base swapped in");
+  assert.deepEqual(kinds(actualFoodObservation(beefDay, beefMeal, ["rice"], beefStates)), [null, null, []], "beef left out");
+  assert.deepEqual(kinds(actualFoodObservation(beefDay, beefMeal, ["rice", "chicken"], beefStates)), [null, null, ["chicken"]], "one familiar and one other new food");
+  assert.deepEqual(kinds(actualFoodObservation(beefDay, beefMeal, ["rice", "beef", "chicken"], beefStates)), [null, null, ["beef", "chicken"]], "beef with another new food");
+  // A food under a restriction is never familiar, so it is never counted either.
+  assert.deepEqual(
+    kinds(actualFoodObservation(beefDay, beefMeal, ["rice", "beef", "egg"], [...beefStates, { ingredientId: "egg", status: "suspectedReaction", testDay: null, exposureCount: 1, lastOfferedAt: null }])),
+    [null, null, ["beef", "egg"]],
+  );
+
+  // Once the first meal is recorded without rice, rice in a later meal is only a repeat: one observation day per date.
+  const afterOatmeal = createBookBasedDayPlan({ ...baseProfile, mealsPerDay: 2 }, ingredientCatalog, riceStates, [], day, [
+    { index: 1, ingredientIds: ["oatmeal"], newExposureIngredientId: null, reaction: "none" },
+  ]);
+  const laterMeal = afterOatmeal.meals[1];
+  assert.deepEqual(laterMeal.items.map((item) => [item.ingredient.id, item.isNewExposure]), [["rice", false]]);
+  assert.deepEqual(kinds(actualFoodObservation(afterOatmeal, laterMeal, ["rice"], riceStates)), [null, "rice", []]);
+  assert.deepEqual(kinds(actualFoodObservation(afterOatmeal, laterMeal, ["rice", "oatmeal"], riceStates)), [null, null, ["rice", "oatmeal"]]);
+  // Rice with a familiar food in a meal that was not its trial is a repeat too.
+  const oatmealPassed = [testing("rice", 2), passed("oatmeal")];
+  const familiarSecond = createBookBasedDayPlan({ ...baseProfile, mealsPerDay: 2 }, ingredientCatalog, oatmealPassed, [], day, []);
+  assert.ok(!familiarSecond.meals[1].items.some((item) => item.isNewExposure), optionIds(familiarSecond.meals[1]).join());
+  assert.deepEqual(kinds(actualFoodObservation(familiarSecond, familiarSecond.meals[1], ["rice", "oatmeal"], oatmealPassed)), [null, "rice", []]);
+});
+
+test("foods a family recorded in place of the meal shown count as the day's new foods, and rice is only repeated while observed", () => {
+  const day = new Date(2026, 7, 4, 12);
+  const profile: BabyProfile = { ...baseProfile, mealsPerDay: 2 };
+  const newFood = (plan: DailyRecommendation) => {
+    const check = plan.checks.find((item) => item.id === "new-food");
+    return [check?.met, check?.detail];
+  };
+  const served = (meal: PlannedMeal) => meal.items.map((item) => [item.ingredient.id, item.isNewExposure]);
+
+  // Rice and oatmeal given together before either was observed: two new foods that day, and since that meal did not start
+  // rice's observation, the other meal rests instead of calling rice a food under observation.
+  const together = createBookBasedDayPlan(profile, ingredientCatalog, [], [], day, [
+    { index: 1, ingredientIds: ["rice", "oatmeal"], newExposureIngredientId: null, reaction: "none" },
+  ]);
+  assert.deepEqual(newFood(together), [false, "아직 통과하지 않은 재료 2가지"]);
+  assert.equal(isHeldMeal(together.meals[1]), true);
+  assert.match(together.meals[1].reasons[0], /첫 끼에서만 관찰/);
+  assert.equal(together.meals.some((meal) => meal.reasons.some((reason) => reason.includes("관찰 중인 재료(쌀)"))), false);
+
+  // Oatmeal in place of the first rice: rice that was never given is not served later that day as a repeat.
+  const oatmealOnly = createBookBasedDayPlan(profile, ingredientCatalog, [], [], day, [
+    { index: 1, ingredientIds: ["oatmeal"], newExposureIngredientId: null, reaction: "none" },
+  ]);
+  assert.equal(oatmealOnly.currentTrial?.id, "rice");
+  assert.equal(isHeldMeal(oatmealOnly.meals[1]), true);
+  assert.match(oatmealOnly.meals[1].reasons[0], /첫 끼에서만 관찰/);
+  assert.deepEqual(newFood(oatmealOnly), [true, "아직 통과하지 않은 재료 1가지"]);
+
+  // Rice already under observation is still given again after such a meal, and counts as that day's second new food.
+  const underObservation = createBookBasedDayPlan(profile, ingredientCatalog, [testing("rice", 2)], [], day, [
+    { index: 1, ingredientIds: ["oatmeal"], newExposureIngredientId: null, reaction: "none" },
+  ]);
+  assert.deepEqual(served(underObservation.meals[1]), [["rice", false]]);
+  assert.deepEqual(newFood(underObservation), [false, "아직 통과하지 않은 재료 2가지"]);
+
+  // The day's observation counted from a family record with a familiar food is the usual one food under observation, and
+  // a plan before anything is recorded is unchanged.
+  const counted = createBookBasedDayPlan(profile, ingredientCatalog, [testing("rice", 2), passed("oatmeal")], [], day, [
+    { index: 1, ingredientIds: ["rice", "oatmeal"], newExposureIngredientId: "rice", reaction: "none" },
+  ]);
+  assert.deepEqual(newFood(counted), [true, "1개 관찰 중"]);
+  assert.deepEqual(newFood(createBookBasedDayPlan(profile, ingredientCatalog, [], [], day, [])), [true, "1개 관찰 중"]);
+});
+
+test("a corrected meal replaces only its slot of a stored day and drops the day's food claims instead of recomputing them", () => {
+  const profile: BabyProfile = { ...baseProfile, mealsPerDay: 2, milkMlPerDay: 800 };
+  // The day as stored when meal 1 was recorded: the book menu that adds beef to rice and oatmeal, one food observed.
+  const stored = createBookBasedDayPlan(profile, ingredientCatalog, [passed("rice"), passed("oatmeal")], [], new Date(2026, 7, 4, 12), []);
+  const shown = stored.meals[0];
+  const claim = (day: DailyRecommendation, id: string) => {
+    const check = day.checks.find((item) => item.id === id);
+    return check ? [check.met, check.detail] : null;
+  };
+  assert.deepEqual(shown.items.filter((item) => item.isNewExposure).map((item) => item.ingredient.id), ["beef"]);
+  assert.deepEqual([claim(stored, "grain"), claim(stored, "new-food"), claim(stored, "fish-cap")], [
+    [true, "매 끼의 기본 에너지 식품"],
+    [true, "1개 관찰 중"],
+    [true, "최근 7일 0/2회"],
+  ]);
+  assert.ok(stored.summaryReasons.length > 0);
+
+  // Corrected to beef and salmon: two foods not observed yet, no grain, and a fish meal.
+  const corrected = recordedMealSlot({
+    index: 1,
+    ingredientIds: ["beef", "salmon"],
+    newExposureIngredientId: null,
+    title: "소고기·연어",
+    time: shown.time,
+    textureMm: shown.textureMm,
+    servingGuide: "",
+    textureGuide: "",
+    servingMode: "",
+    reasons: [`‘${shown.title}’로 기록했던 식사를 실제로 먹인 재료로 고쳤어요.`],
+  }, ingredientCatalog, shown.time);
+  const day = correctedDaySnapshot(stored, corrected);
+  assert.deepEqual(
+    [day.meals[0].optionId, day.meals[0].items.map((item) => [item.ingredient.id, item.isNewExposure])],
+    ["recorded:1", [["beef", false], ["salmon", false]]],
+  );
+  assert.deepEqual(
+    day.meals[0].alternatives?.map((option) => option.optionId),
+    mealOptions(shown).map((option) => option.optionId),
+    "the book menu first recorded stays beside it, first, as an option that was not followed",
+  );
+  assert.equal(day.meals[0].alternatives?.[0].alternatives, undefined);
+  assert.deepEqual(day.checks, stored.checks.filter((check) => check.id === "texture" || check.id === "milk-flow"), "only the checks that do not depend on the foods stay");
+  assert.deepEqual([claim(day, "grain"), claim(day, "new-food"), claim(day, "fish-cap"), day.summaryReasons], [null, null, null, []]);
+  const otherFields = (plan: DailyRecommendation) => Object.fromEntries(Object.entries(plan).filter(([key]) => !["meals", "checks", "summaryReasons"].includes(key)));
+  assert.deepEqual(otherFields(day), otherFields(stored), "every other stored field stays");
+  assert.deepEqual(day.meals[1], stored.meals[1], "the other meal stays as stored");
+
+  // Correcting the same meal again keeps the first book menu as the option not followed, not the first correction.
+  const again = correctedDaySnapshot(day, { ...corrected, title: "소고기" });
+  assert.deepEqual(again.meals[0].alternatives?.map((option) => option.optionId), mealOptions(shown).map((option) => option.optionId));
+});
+
+test("records keep a food the family removed from its list, its fish meals count toward the cap, and it is never offered", () => {
+  const profile: BabyProfile = { ...baseProfile, stage: "middle", ageMonths: 8, mealsPerDay: 3, snacksPerDay: 1, textureMm: 3 };
+  const removedFish: IngredientDefinition = { ...ingredientById.get("whitefish")!, id: "custom-old-fish", name: "우리집 동태", introductionPriority: 1000 };
+  const removedVegetable: IngredientDefinition = { ...ingredientById.get("cabbage")!, id: "custom-old-veg", name: "우리집 양배추", introductionPriority: 1001 };
+  const recordDefinitions = [...ingredientCatalog, removedFish, removedVegetable];
+  const states = ["rice", "cabbage", "pumpkin", "apple", "whitefish", removedFish.id, removedVegetable.id].map(passed);
+  const today = new Date("2026-07-31T12:00:00.000Z");
+  const history: MealHistoryEntry[] = [
+    { servedAt: "2026-07-28T10:00:00.000Z", ingredientIds: ["rice", removedFish.id], completion: "half", mealType: "meal" },
+    { servedAt: "2026-07-30T10:00:00.000Z", ingredientIds: ["rice", removedFish.id], completion: "most", mealType: "meal" },
+  ];
+  const recorded = [{ index: 1, ingredientIds: ["rice", removedVegetable.id], newExposureIngredientId: null, reaction: "none" as const, title: "쌀·우리집 양배추", time: "09:00" }];
+  const offered = (plan: DailyRecommendation) => [
+    ...plan.meals.filter((meal) => meal.index !== 1).flatMap(mealOptions),
+    ...plan.snacks,
+  ].flatMap((meal) => meal.items.map((item) => item.ingredient.id)).concat(plan.nextAdditions.map((addition) => addition.ingredient.id));
+  const fishCap = (plan: DailyRecommendation) => plan.checks.find((check) => check.id === "fish-cap")?.detail;
+
+  const withoutRemoved = createBookBasedDayPlan(profile, ingredientCatalog, states, history, today, recorded);
+  const withRemoved = createBookBasedDayPlan(profile, ingredientCatalog, states, history, today, recorded, null, recordDefinitions);
+  assert.deepEqual(withoutRemoved.meals[0].items.map((item) => item.ingredient.id), ["rice"], "an unknown food used to drop out of its record");
+  assert.deepEqual(withRemoved.meals[0].items.map((item) => item.ingredient.id), ["rice", removedVegetable.id], "the record holds every food it stored");
+  assert.ok(offered(withoutRemoved).includes("whitefish"), "without its removed fish meals the week looks fish-free");
+  assert.equal(fishCap(withRemoved), "최근 7일 2/2회");
+  assert.deepEqual(offered(withRemoved).filter((id) => ingredientById.get(id)?.foodGroup === "fish"), [], "the cap holds with the removed fish meals counted");
+  assert.deepEqual(offered(withRemoved).filter((id) => id.startsWith("custom-old")), [], "a removed food is never offered, even when it passed");
+  assert.equal(countRecentFish(recordDefinitions, history, today), 2);
 });
 
 test("the prestart preview is unchanged by the start window and never stands in for a confirmed start", () => {

@@ -283,11 +283,12 @@ function rankIntroductionCandidates(
   states: ChildIngredientState[],
   history: MealHistoryEntry[],
   today: Date,
+  recordDefinitions: IngredientDefinition[] = definitions,
 ): IngredientDefinition[] {
   const stateById = new Map(states.map((state) => [state.ingredientId, state]));
   const nextMissingGroup = nextMissingIntroductionGroup(definitions, states);
   const recentIds = recentIngredientIds(history, today, 3);
-  const fishCount = countRecentFish(definitions, history, today);
+  const fishCount = countRecentFish(recordDefinitions, history, today);
 
   const candidates = definitions.filter((item) => {
     const state = stateById.get(item.id);
@@ -319,25 +320,30 @@ function rankIntroductionCandidates(
   return scored.map(({ item }) => item);
 }
 
+/**
+ * `recordDefinitions` name the foods the meal history may hold, also ones the family has since removed from its list; they
+ * only count the recent fish meals and are never chosen.
+ */
 export function chooseNextIngredient(
   profile: BabyProfile,
   definitions: IngredientDefinition[],
   states: ChildIngredientState[],
   history: MealHistoryEntry[],
   today = new Date(),
+  recordDefinitions: IngredientDefinition[] = definitions,
 ): IngredientDefinition | null {
   if (isReviewHold(history, today)) return null;
 
   const activeTest = states.find((state) => state.status === "testing");
   if (activeTest) {
     const activeIngredient = definitions.find((item) => item.id === activeTest.ingredientId);
-    const fishCount = countRecentFish(definitions, history, today);
+    const fishCount = countRecentFish(recordDefinitions, history, today);
     return activeIngredient && !hardBlocked(profile, activeIngredient, activeTest, fishCount, today)
       ? activeIngredient
       : null;
   }
 
-  return rankIntroductionCandidates(profile, definitions, states, history, today)[0] ?? null;
+  return rankIntroductionCandidates(profile, definitions, states, history, today, recordDefinitions)[0] ?? null;
 }
 
 export type TrialOutcome =
@@ -484,15 +490,42 @@ export function applyRepeatedTrialReaction(
     : [...states, next];
 }
 
+/**
+ * How a meal recorded with the foods the family actually gave counts toward observation, when they differ from the meal
+ * that was shown. Only the day's observation food (`plan.currentTrial`) is counted, and only while it is the meal's one
+ * food that has not passed: in the meal that was shown as its trial it is the day's observation (`trial`), in any other
+ * meal a repeat that can only add a restriction (`repeat`). Every other food that has not passed is recorded as given
+ * without counting (`uncounted`), so a meal with several such foods never clears one of them or pins its reaction on one,
+ * and a food that is not the day's observation never starts an observation of its own.
+ */
+export function actualFoodObservation(
+  plan: Pick<DailyRecommendation, "currentTrial">,
+  shown: PlannedMeal,
+  actualIngredientIds: string[],
+  states: ChildIngredientState[],
+): { trial: string | null; repeat: string | null; uncounted: string[] } {
+  const passedIds = new Set(states.filter((state) => state.status === "passed").map((state) => state.ingredientId));
+  const unconfirmed = [...new Set(actualIngredientIds)].filter((id) => !passedIds.has(id));
+  const observed = plan.currentTrial?.id;
+  if (observed && unconfirmed.length === 1 && unconfirmed[0] === observed) {
+    const shownAsTrial = shown.items.some((item) => item.isNewExposure && item.ingredient.id === observed);
+    return shownAsTrial
+      ? { trial: observed, repeat: null, uncounted: [] }
+      : { trial: null, repeat: observed, uncounted: [] };
+  }
+  return { trial: null, repeat: null, uncounted: unconfirmed };
+}
+
 function allowedPassedIngredients(
   profile: BabyProfile,
   definitions: IngredientDefinition[],
   states: ChildIngredientState[],
   history: MealHistoryEntry[],
   today: Date,
+  recordDefinitions: IngredientDefinition[],
 ): IngredientDefinition[] {
   const stateById = new Map(states.map((state) => [state.ingredientId, state]));
-  const fishCount = countRecentFish(definitions, history, today);
+  const fishCount = countRecentFish(recordDefinitions, history, today);
   return definitions.filter((item) => {
     const state = stateById.get(item.id);
     return state?.status === "passed" && !hardBlocked(profile, item, state, fishCount, today);
@@ -756,6 +789,36 @@ export function mealOptions(meal: PlannedMeal): PlannedMeal[] {
   return [meal, ...(meal.alternatives ?? [])];
 }
 
+/**
+ * A recorded meal as the day shows it: as it was stored, with no recipe regenerated for it. Foods without a definition
+ * (no longer in the family's list) are left out of its items. `fallbackTime` is used when the record stored no time.
+ */
+export function recordedMealSlot(
+  meal: RecordedMeal,
+  definitions: IngredientDefinition[],
+  fallbackTime: string,
+): PlannedMeal {
+  const definitionById = new Map(definitions.map((item) => [item.id, item]));
+  return {
+    index: meal.index,
+    type: "meal",
+    optionId: `recorded:${meal.index}`,
+    time: meal.time ?? fallbackTime,
+    title: meal.title ?? "",
+    items: meal.ingredientIds
+      .map((id) => definitionById.get(id))
+      .filter((item): item is IngredientDefinition => Boolean(item))
+      .map((item) => itemFor(item, meal.newExposureIngredientId ?? null)),
+    servingGuide: meal.servingGuide ?? "",
+    textureGuide: meal.textureGuide ?? "",
+    textureMm: meal.textureMm ?? undefined,
+    servingMode: meal.servingMode ?? "",
+    preparationSteps: [],
+    storageGuide: "",
+    reasons: meal.reasons ?? [],
+  };
+}
+
 /** A slot that shows what a family record stored instead of a recommendation. */
 export function isRecordedMeal(meal: PlannedMeal): boolean {
   return meal.optionId.startsWith("recorded:");
@@ -769,6 +832,29 @@ export function isHeldMeal(meal: PlannedMeal): boolean {
 /** A slot for recording what the family actually gave before the book's menus apply; it is not a recommendation. */
 export function isActualMeal(meal: PlannedMeal): boolean {
   return meal.optionId.startsWith("actual:");
+}
+
+// Day checks that do not depend on which foods the meals hold: the day's texture and the recorded milk intake.
+const FOOD_INDEPENDENT_CHECK_IDS = new Set(["texture", "milk-flow"]);
+
+/**
+ * A stored day snapshot after one of its recorded meals was corrected to the foods actually given. That slot holds the
+ * corrected meal, with the book menu it was first recorded as (if it was one) kept beside it as an option that was not
+ * followed; every other meal, snack and stored field stays as saved. The day's food checks and the summary of how the
+ * day was balanced were worked out from the foods first recorded, so they are dropped rather than recomputed from
+ * today's states; the texture and milk checks do not depend on the foods and stay.
+ */
+export function correctedDaySnapshot(stored: DailyRecommendation, corrected: PlannedMeal): DailyRecommendation {
+  const storedSlot = stored.meals.find((meal) => meal.index === corrected.index);
+  const notFollowed = storedSlot && !isRecordedMeal(storedSlot) && !isActualMeal(storedSlot) && !isHeldMeal(storedSlot)
+    ? [{ ...storedSlot, alternatives: undefined }, ...(storedSlot.alternatives ?? [])]
+    : storedSlot?.alternatives ?? [];
+  return {
+    ...stored,
+    meals: stored.meals.map((meal) => (meal.index === corrected.index ? { ...corrected, alternatives: notFollowed } : meal)),
+    checks: (stored.checks ?? []).filter((check) => FOOD_INDEPENDENT_CHECK_IDS.has(check.id)),
+    summaryReasons: [],
+  };
 }
 
 function templateIngredients(
@@ -955,17 +1041,27 @@ function buildChecks(
   introductionGroups: Set<IntroductionGroup>,
   fishCountBeforeToday: number,
   textureMm: number,
+  passedIds: Set<string>,
 ): TargetCheck[] {
   const ingredients = plannedItems.flatMap((meal) => meal.items.map((item) => item.ingredient));
   const hasGroup = (...groups: FoodGroup[]) => ingredients.some((item) => item.foodGroup && groups.includes(item.foodGroup));
-  const newCount = new Set(plannedItems.flatMap((meal) => meal.items.filter((item) => item.isNewExposure).map((item) => item.ingredient.id))).size;
+  const observedIds = new Set(plannedItems.flatMap((meal) => meal.items.filter((item) => item.isNewExposure).map((item) => item.ingredient.id)));
+  // Foods that have not passed and are not the day's counted observation, such as the foods a family recorded together
+  // in place of the meal shown, count as new foods of the day as well.
+  const uncountedIds = new Set(ingredients.map((item) => item.id).filter((id) => !passedIds.has(id) && !observedIds.has(id)));
+  const newCount = observedIds.size + uncountedIds.size;
   const fishToday = plannedItems.filter((meal) => meal.items.some((item) => item.ingredient.foodGroup === "fish")).length;
   const guide = getStageGuide(stage);
   const meatIntroduced = introductionGroups.has("meat");
   const checks: TargetCheck[] = [
     { id: "grain", label: "곡류", met: hasGroup("grain", "starchyFood"), detail: "매 끼의 기본 에너지 식품" },
     { id: "daily-meat", label: "매일 고기", met: !meatIntroduced || hasGroup("redMeat"), detail: meatIntroduced ? `하루 ${guide.meatGramsPerDay[0]}~${guide.meatGramsPerDay[1]}g 이상 목표` : "곡류 적응 뒤 시작" },
-    { id: "new-food", label: "새 재료 한 가지", met: newCount <= 1, detail: newCount ? `${newCount}개 관찰 중` : "현재 관찰 재료 없음" },
+    {
+      id: "new-food",
+      label: "새 재료 한 가지",
+      met: newCount <= 1,
+      detail: uncountedIds.size ? `아직 통과하지 않은 재료 ${newCount}가지` : newCount ? `${newCount}개 관찰 중` : "현재 관찰 재료 없음",
+    },
     { id: "fish-cap", label: "생선 주 2회", met: fishCountBeforeToday + fishToday <= 2, detail: `최근 7일 ${fishCountBeforeToday + fishToday}/2회` },
     { id: "texture", label: "현재 질감", met: textureMm >= guide.textureMmRange[0], detail: `${textureMm}mm 안팎` },
   ];
@@ -1003,6 +1099,7 @@ function nextAdditionsFor(
   currentTrial: IngredientDefinition | null,
   passed: IngredientDefinition[],
   reviewHold: boolean,
+  recordDefinitions: IngredientDefinition[],
 ): NextAddition[] {
   if (reviewHold) return [];
   const activeTest = states.find((state) => state.status === "testing");
@@ -1031,7 +1128,7 @@ function nextAdditionsFor(
   });
   // The first entry is the engine's own next pick. Later candidates stay in the book's next missing food group
   // while that group still has an eligible food; once it is open or fully blocked the engine's ranking applies.
-  const [upcoming, ...later] = rankIntroductionCandidates(profile, definitions, assumedStates, history, today);
+  const [upcoming, ...later] = rankIntroductionCandidates(profile, definitions, assumedStates, history, today, recordDefinitions);
   if (!upcoming) return [];
   const missingGroup = nextMissingIntroductionGroup(definitions, assumedStates);
   const sameGroupOnly = Boolean(missingGroup) && upcoming.introductionGroup === missingGroup;
@@ -1048,7 +1145,9 @@ function nextAdditionsFor(
 /**
  * `chosenOption` is the menu the family picked for the next meal to record (the first one not recorded yet). While it
  * is still one of that meal's options, the day checks count it instead of the default; the meals and their options
- * are the same either way.
+ * are the same either way. `recordDefinitions` are every food the family's records may hold: `definitions` and the
+ * foods the family has since removed from its list. They are only used to show recorded meals as stored and to read
+ * the meal history (food groups and fish meals), never offered.
  */
 export function createBookBasedDayPlan(
   profile: BabyProfile,
@@ -1058,23 +1157,25 @@ export function createBookBasedDayPlan(
   today = new Date(),
   recordedMeals?: RecordedMeal[],
   chosenOption?: { mealIndex: number; optionId: string } | null,
+  recordDefinitions: IngredientDefinition[] = definitions,
 ): DailyRecommendation {
   const stage = inferWeaningStage(profile);
   const guide = getStageGuide(stage);
-  const passed = allowedPassedIngredients(profile, definitions, states, history, today);
+  const passed = allowedPassedIngredients(profile, definitions, states, history, today, recordDefinitions);
   const planDate = isoDate(today);
   const definitionById = new Map(definitions.map((item) => [item.id, item]));
+  const recordedById = new Map(recordDefinitions.map((item) => [item.id, item]));
   const recorded = (recordedMeals ?? []).map((meal) => ({
     ...meal,
     ingredients: meal.ingredientIds
-      .map((id) => definitionById.get(id))
+      .map((id) => recordedById.get(id))
       .filter((item): item is IngredientDefinition => Boolean(item)),
   }));
   const recordedIndexes = new Set(recorded.map((meal) => meal.index));
   const isFishMeal = (items: IngredientDefinition[]) => items.some((item) => item.foodGroup === "fish");
   // When today's records are supplied they replace same-day history, so each meal of the day counts once.
   const priorFish = countRecentFish(
-    definitions,
+    recordDefinitions,
     recordedMeals ? history.filter((entry) => isoDate(new Date(entry.servedAt)) !== planDate) : history,
     today,
   );
@@ -1085,11 +1186,16 @@ export function createBookBasedDayPlan(
   const reviewHold = sameDayReview || isReviewHold(history, today);
 
   const trialMealIndex = recordedIndexes.has(1) ? null : 1;
-  let currentTrial = sameDayReview ? null : chooseNextIngredient(profile, definitions, states, history, today);
+  let currentTrial = sameDayReview ? null : chooseNextIngredient(profile, definitions, states, history, today, recordDefinitions);
   if (trialMealIndex && currentTrial?.foodGroup === "fish" && priorFish + recordedFish >= WEEKLY_FISH_MEAL_CAP) {
     currentTrial = null;
   }
-  const repeatableRice = currentTrial?.id === FIRST_TRIAL_GRAIN_ID ? currentTrial : null;
+  // The other meals of a rice day give rice again only when it is the rice under observation or the rice the first meal
+  // still observes: rice a meal recorded without counting it as the observation (with other foods not observed yet, or
+  // on a held slot) is not under observation, so it is never offered as its repeat.
+  const riceGiven = trialMealIndex !== null
+    || states.some((state) => state.ingredientId === FIRST_TRIAL_GRAIN_ID && state.status === "testing");
+  const repeatableRice = currentTrial?.id === FIRST_TRIAL_GRAIN_ID && riceGiven ? currentTrial : null;
   // Book menus start at six months (corrected age when set), or from a confirmed initial start in the seven days before
   // the six-month birthday. Once the family has confirmed an earlier initial start on or before this day, the rice they
   // actually give a younger child can still be recorded: the first meal records the rice observation with the usual
@@ -1234,24 +1340,9 @@ export function createBookBasedDayPlan(
   const meals: PlannedMeal[] = [];
   for (let index = 1; index <= mealCount; index += 1) {
     const time = mealTimes[index - 1];
-    const recordedMeal = recorded.find((meal) => meal.index === index);
+    const recordedMeal = recordedMeals?.find((meal) => meal.index === index);
     if (recordedMeal) {
-      // A recorded meal is shown as it was stored; no recipe is regenerated for it.
-      meals.push({
-        index,
-        type: "meal",
-        optionId: `recorded:${index}`,
-        time: recordedMeal.time ?? time,
-        title: recordedMeal.title ?? "",
-        items: recordedMeal.ingredients.map((item) => itemFor(item, recordedMeal.newExposureIngredientId ?? null)),
-        servingGuide: recordedMeal.servingGuide ?? "",
-        textureGuide: recordedMeal.textureGuide ?? "",
-        textureMm: recordedMeal.textureMm ?? undefined,
-        servingMode: recordedMeal.servingMode ?? "",
-        preparationSteps: [],
-        storageGuide: "",
-        reasons: recordedMeal.reasons ?? [],
-      });
+      meals.push(recordedMealSlot(recordedMeal, recordDefinitions, time));
       continue;
     }
     const chosen = defaults.get(index) ?? null;
@@ -1340,7 +1431,8 @@ export function createBookBasedDayPlan(
     : undefined;
   const selected = chosenSlot ? mealOptions(chosenSlot).find((option) => option.optionId === chosenOption?.optionId) : undefined;
   const servedMeals = selected ? meals.map((meal) => (meal.index === selected.index ? selected : meal)) : meals;
-  const checks = buildChecks(profile, stage, [...servedMeals, ...snacks], effectiveGroups, priorFish, textureMm);
+  const passedIds = new Set(states.filter((state) => state.status === "passed").map((state) => state.ingredientId));
+  const checks = buildChecks(profile, stage, [...servedMeals, ...snacks], effectiveGroups, priorFish, textureMm, passedIds);
   const condition = profile.temporaryCondition ?? "none";
   const safetyNotes = [
     "계란·고기·생선은 속까지 익히고, 단계보다 단단하거나 둥근 질식 위험 형태는 제외해요.",
@@ -1371,7 +1463,7 @@ export function createBookBasedDayPlan(
       "하루 전체의 곡류·고기·채소·과일 균형과 최근 7일 빈도를 확인했어요.",
       "월령만이 아니라 현재 질감 능력과 식사 기술을 함께 반영했어요.",
     ],
-    nextAdditions: nextAdditionsFor(profile, stage, definitions, states, history, today, currentTrial, passed, reviewHold),
+    nextAdditions: nextAdditionsFor(profile, stage, definitions, states, history, today, currentTrial, passed, reviewHold, recordDefinitions),
     recommendationVersion: RECOMMENDATION_VERSION,
     recordOnly,
   };

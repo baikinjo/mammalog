@@ -68,12 +68,17 @@ function hasFoodGroup(ingredient: IngredientDefinition | undefined, groups: Food
   return Boolean(ingredient?.foodGroup && groups.includes(ingredient.foodGroup));
 }
 
+/**
+ * `recordDefinitions` name every food the history may hold, also foods the family has since removed from its list; they
+ * only classify what was eaten (food groups and fish meals). Which food groups are open follows `definitions`.
+ */
 export function createWeeklyBalance(
   profile: BabyProfile,
   definitions: IngredientDefinition[],
   states: ChildIngredientState[],
   history: MealHistoryEntry[],
   anchor = new Date(),
+  recordDefinitions: IngredientDefinition[] = definitions,
 ): WeeklyBalanceSummary {
   const end = new Date(anchor);
   end.setHours(23, 59, 59, 999);
@@ -87,7 +92,7 @@ export function createWeeklyBalance(
   });
   const mealEntries = entries.filter((entry) => entry.mealType !== "snack");
   const recordedDayIds = new Set(mealEntries.map((entry) => localDay(entry.servedAt)));
-  const ingredientById = new Map(definitions.map((ingredient) => [ingredient.id, ingredient]));
+  const ingredientById = new Map(recordDefinitions.map((ingredient) => [ingredient.id, ingredient]));
   const stateById = new Map(states.map((state) => [state.ingredientId, state]));
   const openGroups = new Set<IntroductionGroup>(
     definitions

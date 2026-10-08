@@ -68,3 +68,27 @@ test("warns when fish exceeds the rolling seven-day cap", () => {
   assert.equal(summary.metrics.find((metric) => metric.id === "fish")?.status, "attention");
   assert.match(summary.focus, /생선이 2회를 넘었어요/);
 });
+
+test("counts what was eaten with a food the family has since removed, while open food groups follow its current list", () => {
+  const removedFish = { ...ingredientCatalog.find((ingredient) => ingredient.id === "whitefish")!, id: "custom-old-fish", name: "우리집 동태" };
+  const removedFruit = { ...ingredientCatalog.find((ingredient) => ingredient.id === "apple")!, id: "custom-old-fruit", name: "우리집 사과" };
+  const states = ["rice", "beef", removedFish.id, removedFruit.id].map(passed);
+  const history: MealHistoryEntry[] = [
+    { servedAt: "2026-07-27T09:00:00.000Z", ingredientIds: ["rice", "beef", removedFish.id], completion: "half", mealType: "meal", textureMm: 5 },
+    { servedAt: "2026-07-29T09:00:00.000Z", ingredientIds: ["rice", "beef", removedFish.id, removedFruit.id], completion: "half", mealType: "meal", textureMm: 5 },
+    { servedAt: "2026-07-31T09:00:00.000Z", ingredientIds: ["rice", "beef", "salmon"], completion: "half", mealType: "meal", textureMm: 5 },
+  ];
+  const anchor = new Date("2026-07-31T12:00:00.000Z");
+  const metric = (summary: ReturnType<typeof createWeeklyBalance>, id: string) => {
+    const found = summary.metrics.find((item) => item.id === id);
+    return [found?.value, found?.status];
+  };
+  const listed = createWeeklyBalance(profile, ingredientCatalog, states, history, anchor);
+  const recorded = createWeeklyBalance(profile, ingredientCatalog, states, history, anchor, [...ingredientCatalog, removedFish, removedFruit]);
+
+  assert.deepEqual(metric(listed, "fish"), ["1/2회", "met"]);
+  assert.deepEqual(metric(recorded, "fish"), ["3/2회", "attention"], "the removed fish meals still count");
+  assert.match(recorded.focus, /생선이 2회를 넘었어요/);
+  // A removed food's passed state does not open its group: fruit stays not introduced on the family's current list.
+  assert.deepEqual(metric(recorded, "fruit"), metric(listed, "fruit"));
+});
