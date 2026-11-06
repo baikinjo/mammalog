@@ -42,6 +42,7 @@ import {
   isHeldMeal,
   isRecordedMeal,
   mealOptions,
+  newRecordFoodSelection,
   recordedMealSlot,
   resolveMealTimes,
   type TrialOutcome,
@@ -121,8 +122,9 @@ type MealChoice = { childId: string; date: string; mealIndex: number; optionId: 
 /**
  * What the open record sheet will write, captured when it opened. A save goes only to this family, account,
  * child, date and meal; a new record writes exactly `meal` (or the foods the family actually gave instead), and an edit
- * only touches the record `mealPlanId`. `ingredientIds` are the foods the sheet opened with: the shown meal's or the
- * record's.
+ * only touches the record `mealPlanId`. `ingredientIds` are the foods a save is compared with: the shown meal's or the
+ * record's. `initialFoodIds` are the foods selected when the sheet opened: the same, except that a new record of a meal
+ * the plan offers starts with the foods given the day before, which `initialFoodsNote` points out.
  */
 type RecordTarget = {
   childId: string | null;
@@ -134,6 +136,8 @@ type RecordTarget = {
   stage: Exclude<WeaningStage, "prestart"> | null;
   mealPlanId: string | null;
   ingredientIds: string[];
+  initialFoodIds: string[];
+  initialFoodsNote: string | null;
 };
 /**
  * Foods whose observation status the family is asked to check after a meal was recorded or corrected with them. It belongs
@@ -417,6 +421,25 @@ function recordedMealsOn(records: FamilyMealRecord[], date: string): RecordedMea
 /** The same foods in any order give the same key. */
 function foodSetKey(ingredientIds: string[]): string {
   return [...new Set(ingredientIds)].sort().join("|");
+}
+
+/**
+ * Says that a new record starts with the foods given on the day before its date (`forToday`: the record is for today),
+ * and names any food from that day the family can no longer choose, which was not selected.
+ */
+function previousDayFoodsNote(
+  previousDay: { date: string; copiedIds: string[]; unavailableIds: string[] },
+  forToday: boolean,
+  foodName: (id: string) => string,
+): string {
+  const day = forToday ? "어제" : `전날(${formatKoreanDate(previousDay.date)})`;
+  const unavailable = [...new Set(previousDay.unavailableIds.map(foodName))].join("·");
+  if (!previousDay.copiedIds.length) {
+    return `${day} 먹인 재료(${unavailable})는 지금 고를 수 없어 불러오지 않았어요. 보여준 메뉴의 재료로 시작해요.`;
+  }
+  return `${day} 먹인 재료를 불러왔어요. ${forToday ? "오늘 " : ""}이 끼니에 실제로 먹인 재료만 남겨주세요.${
+    unavailable ? ` 지금 고를 수 없는 재료(${unavailable})는 불러오지 않았어요.` : ""
+  }`;
 }
 
 /** Everything about a meal that is shown before recording it or saved with it; its alternatives are left out. */
@@ -2917,6 +2940,8 @@ function RecordSheet({
   foodChoices,
   knownFoods,
   initialFoodIds,
+  initialFoodsNote,
+  baselineFoodIds,
   forHeldMeal,
   onClose,
   onSave,
@@ -2930,8 +2955,15 @@ function RecordSheet({
   foodChoices: IngredientDefinition[];
   /** `foodChoices` plus the family's removed foods, so a record that still holds one shows its name. */
   knownFoods: IngredientDefinition[];
-  /** Selected when the sheet opens: the shown meal's foods, or the record's stored foods. */
+  /**
+   * Selected when the sheet opens: the record's stored foods, none for a held slot, or for a new record the foods given
+   * the day before (else the shown meal's).
+   */
   initialFoodIds: string[];
+  /** Where a new record's starting foods came from, when they were taken from the day before. */
+  initialFoodsNote: string | null;
+  /** The foods a save is compared with: the shown meal's, or the record's stored foods. */
+  baselineFoodIds: string[];
   /** The slot is one the plan holds: the sheet only records a meal already given, starting with no food selected. */
   forHeldMeal: boolean;
   onClose: () => void;
@@ -2949,7 +2981,9 @@ function RecordSheet({
     () => knownFoodById.get(initialFoodIds[0] ?? "")?.category ?? "grain",
   );
   const [saving, setSaving] = useState(false);
-  const foodsChanged = foodSetKey(foodIds) !== foodSetKey(initialFoodIds);
+  // Foods that differ from the shown meal (or the stored record) make the record one of foods actually given, also when
+  // they are the starting foods taken from the day before.
+  const foodsChanged = foodSetKey(foodIds) !== foodSetKey(baselineFoodIds);
   const toggleFood = (id: string) => setFoodIds((current) => (
     current.includes(id) ? current.filter((foodId) => foodId !== id) : [...current, id]
   ));
@@ -3007,6 +3041,7 @@ function RecordSheet({
               );
             })}
           </div>
+          {initialFoodsNote && <p className="actual-food-message" role="status">{initialFoodsNote}</p>}
           {forHeldMeal && (
             <p className="actual-food-message" role="status">쉬어가는 끼니라 추천 메뉴가 없어요. 이미 먹인 재료를 고르면 추천이 아닌 직접 기록으로 저장하고, 관찰 일수나 반응은 재료별로 반영하지 않아요.</p>
           )}
@@ -3901,9 +3936,18 @@ export function MealApp() {
   const openRecordSheet = (
     target: Pick<RecordTarget, "date" | "mealIndex" | "meal" | "stage" | "mealPlanId"> & { ingredientIds?: string[] },
   ) => {
+    const ingredientIds = target.ingredientIds ?? target.meal?.items.map((item) => item.ingredient.id) ?? [];
+    // A new record of a meal the plan offers starts with the foods given the day before; an edit starts with the record's
+    // foods and a held slot with none. Either way a save is compared with `ingredientIds`.
+    const selection = !target.mealPlanId && target.meal && !isHeldMeal(target.meal)
+      ? newRecordFoodSelection(records, target.date, allIngredients, ingredientIds)
+      : { ingredientIds, previousDay: null };
+    const foodName = (id: string) => recordIngredients.find((ingredient) => ingredient.id === id)?.name ?? "알 수 없는 재료";
     setRecordTarget({
       ...target,
-      ingredientIds: target.ingredientIds ?? target.meal?.items.map((item) => item.ingredient.id) ?? [],
+      ingredientIds,
+      initialFoodIds: selection.ingredientIds,
+      initialFoodsNote: selection.previousDay ? previousDayFoodsNote(selection.previousDay, target.date === todayId, foodName) : null,
       childId: currentChild?.id ?? null,
       householdId: familyWorkspace?.householdId ?? null,
       userId: familyDataUserIdRef.current,
@@ -4239,7 +4283,9 @@ export function MealApp() {
           initialRecord={editingRecord}
           foodChoices={allIngredients}
           knownFoods={recordIngredients}
-          initialFoodIds={recordTarget.ingredientIds}
+          initialFoodIds={recordTarget.initialFoodIds}
+          initialFoodsNote={recordTarget.initialFoodsNote}
+          baselineFoodIds={recordTarget.ingredientIds}
           forHeldMeal={!recordTarget.mealPlanId && Boolean(recordTarget.meal && isHeldMeal(recordTarget.meal))}
           onClose={() => setRecordTarget(null)}
           onSave={saveRecord}

@@ -3,7 +3,7 @@ import {
   conditionGuidance,
   getStageGuide,
 } from "./book-knowledge";
-import { addCalendarMonths, calendarDaysBetween } from "./calendar-date";
+import { addCalendarDays, addCalendarMonths, calendarDaysBetween } from "./calendar-date";
 import {
   menuInstruction,
   menusForStage,
@@ -514,6 +514,31 @@ export function actualFoodObservation(
       : { trial: null, repeat: observed, uncounted: [] };
   }
   return { trial: null, repeat: null, uncounted: unconfirmed };
+}
+
+/**
+ * The foods a new meal record starts with selected: every food recorded in any meal on the calendar day before `date`,
+ * each once and in the order of the family's food list (`choices`), for the family to keep only what it actually gave.
+ * A food that is not in `choices` is never selected and is listed in `unavailableIds` instead. With no record that day,
+ * or none of its foods to choose, the record starts with the shown meal's foods. It is only a starting selection: the
+ * foods saved are checked and counted like any the family picks itself.
+ */
+export function newRecordFoodSelection(
+  records: Array<{ date: string; ingredientIds: string[] }>,
+  date: string,
+  choices: Array<Pick<IngredientDefinition, "id">>,
+  shownIngredientIds: string[],
+): { ingredientIds: string[]; previousDay: { date: string; copiedIds: string[]; unavailableIds: string[] } | null } {
+  const previousDate = addCalendarDays(date, -1);
+  const givenIds = new Set(records.filter((record) => record.date === previousDate).flatMap((record) => record.ingredientIds));
+  if (!previousDate || !givenIds.size) return { ingredientIds: shownIngredientIds, previousDay: null };
+  const choiceIds = [...new Set(choices.map((food) => food.id))];
+  const copiedIds = choiceIds.filter((id) => givenIds.has(id));
+  const unavailableIds = [...givenIds].filter((id) => !choiceIds.includes(id)).sort();
+  return {
+    ingredientIds: copiedIds.length ? copiedIds : shownIngredientIds,
+    previousDay: { date: previousDate, copiedIds, unavailableIds },
+  };
 }
 
 function allowedPassedIngredients(

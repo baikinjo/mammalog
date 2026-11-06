@@ -17,6 +17,7 @@ import {
   isActualMeal,
   isHeldMeal,
   mealOptions,
+  newRecordFoodSelection,
   recordedMealSlot,
   resolveMealTimes,
 } from "../lib/recommendation-engine";
@@ -1329,6 +1330,79 @@ test("a meal recorded with other foods counts only the day's observation food, a
   const familiarSecond = createBookBasedDayPlan({ ...baseProfile, mealsPerDay: 2 }, ingredientCatalog, oatmealPassed, [], day, []);
   assert.ok(!familiarSecond.meals[1].items.some((item) => item.isNewExposure), optionIds(familiarSecond.meals[1]).join());
   assert.deepEqual(kinds(actualFoodObservation(familiarSecond, familiarSecond.meals[1], ["rice", "oatmeal"], oatmealPassed)), [null, "rice", []]);
+});
+
+test("a new record starts with every food given on the calendar day before, once each and in the family's food-list order", () => {
+  const shown = ["rice", "beef", "broccoli"];
+  const record = (date: string, ingredientIds: string[]) => ({ date, ingredientIds });
+  const records = [
+    record("2026-11-05", ["oatmeal"]),
+    record("2026-11-04", ["rice", "beef", "cabbage", "pumpkin", "broccoli"]),
+    record("2026-11-04", ["rice", "bokchoy", "carrot", "beef"]),
+    record("2026-11-03", ["apple"]),
+    record("2026-10-29", ["salmon"]),
+    record("2026-11-06", ["pear"]),
+  ];
+  const yesterday = ["rice", "beef", "cabbage", "bokchoy", "pumpkin", "broccoli", "carrot"];
+  assert.deepEqual(newRecordFoodSelection(records, "2026-11-05", ingredientCatalog, shown), {
+    ingredientIds: yesterday,
+    previousDay: { date: "2026-11-04", copiedIds: yesterday, unavailableIds: [] },
+  }, "the union of both meals of the day before; today's, two days before, last week's and future records are left out");
+  // The same foods in the same order however the records and their foods were loaded.
+  const shuffled = [...records].reverse().map((item) => record(item.date, [...item.ingredientIds].reverse()));
+  assert.deepEqual(newRecordFoodSelection(shuffled, "2026-11-05", ingredientCatalog, shown).ingredientIds, yesterday);
+
+  // An earlier date starts from its own day before, never from the day before today.
+  assert.deepEqual(newRecordFoodSelection(records, "2026-11-04", ingredientCatalog, shown).ingredientIds, ["apple"]);
+  // A day before with no record (or a record with no foods) leaves the shown meal's foods, with no reference.
+  for (const date of ["2026-11-09", "2026-11-03", "2026-10-31", "2026-11-05T00:00", "2026-02-30"]) {
+    const fallback = newRecordFoodSelection(records, date, ingredientCatalog, shown);
+    assert.deepEqual(fallback, { ingredientIds: shown, previousDay: null }, date);
+  }
+  assert.deepEqual(newRecordFoodSelection([record("2026-11-04", [])], "2026-11-05", ingredientCatalog, shown), { ingredientIds: shown, previousDay: null });
+  assert.deepEqual(newRecordFoodSelection([], "2026-11-05", ingredientCatalog, []), { ingredientIds: [], previousDay: null });
+
+  // The calendar day before across month and year ends, leap days and daylight-saving changes.
+  const dayBefore = (date: string, previous: string) => newRecordFoodSelection([
+    record(previous, ["oatmeal"]),
+    record(date, ["apple"]),
+    // Two days before is never used either.
+    record(new Date(Date.parse(`${previous}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10), ["pear"]),
+  ], date, ingredientCatalog, shown);
+  for (const [date, previous] of [
+    ["2026-12-01", "2026-11-30"],
+    ["2027-01-01", "2026-12-31"],
+    ["2028-03-01", "2028-02-29"],
+    ["2027-03-01", "2027-02-28"],
+    ["2026-11-02", "2026-11-01"],
+    ["2026-11-01", "2026-10-31"],
+    ["2027-03-15", "2027-03-14"],
+    ["2027-03-14", "2027-03-13"],
+  ]) {
+    assert.deepEqual(dayBefore(date, previous), {
+      ingredientIds: ["oatmeal"],
+      previousDay: { date: previous, copiedIds: ["oatmeal"], unavailableIds: [] },
+    }, date);
+  }
+
+  // Only foods the family can choose now are selected: its current foods after the catalog's; a food it removed from its
+  // list or any other id is reported instead, and the shown meal's foods are kept when nothing from that day is left.
+  const ours: IngredientDefinition = { ...ingredientById.get("cabbage")!, id: "custom-ours", name: "우리집 배추", introductionPriority: 1000 };
+  const removed: IngredientDefinition = { ...ingredientById.get("whitefish")!, id: "custom-removed", name: "우리집 동태", introductionPriority: 1001 };
+  const choices = [...ingredientCatalog, ours];
+  const mixed = [
+    record("2026-11-04", ["custom-ours", "custom-removed", "rice"]),
+    record("2026-11-04", ["unknown-food", "beef", "rice"]),
+  ];
+  assert.deepEqual(newRecordFoodSelection(mixed, "2026-11-05", choices, shown), {
+    ingredientIds: ["rice", "beef", "custom-ours"],
+    previousDay: { date: "2026-11-04", copiedIds: ["rice", "beef", "custom-ours"], unavailableIds: ["custom-removed", "unknown-food"] },
+  });
+  assert.deepEqual(newRecordFoodSelection(mixed, "2026-11-05", [...choices, removed], shown).ingredientIds, ["rice", "beef", "custom-ours", "custom-removed"]);
+  assert.deepEqual(newRecordFoodSelection([record("2026-11-04", ["custom-removed", "unknown-food"])], "2026-11-05", choices, shown), {
+    ingredientIds: shown,
+    previousDay: { date: "2026-11-04", copiedIds: [], unavailableIds: ["custom-removed", "unknown-food"] },
+  });
 });
 
 test("foods a family recorded in place of the meal shown count as the day's new foods, and rice is only repeated while observed", () => {

@@ -42,6 +42,14 @@ export function addCalendarMonths(dateId: string, months: number): string | null
   return format({ year, month, day: Math.min(parts.day, lastDay) });
 }
 
+/** `dateId` moved by whole calendar days (-1 is the calendar day before), or null unless it is a real calendar date. */
+export function addCalendarDays(dateId: string, days: number): string | null {
+  const parts = partsOf(dateId);
+  if (!parts) return null;
+  const date = new Date((dayNumber(parts) + days) * DAY_MS);
+  return format({ year: date.getUTCFullYear(), month: date.getUTCMonth() + 1, day: date.getUTCDate() });
+}
+
 /** Calendar days from `from` to `to` (negative when `to` is earlier), or null unless both are real calendar dates. */
 export function calendarDaysBetween(from: string, to: string): number | null {
   const start = partsOf(from);

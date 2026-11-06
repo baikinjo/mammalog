@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  addCalendarDays,
   addCalendarMonths,
   calendarDaysBetween,
   completedCalendarMonths,
@@ -19,8 +20,28 @@ test("moves whole calendar months and clamps a missing day to the end of the mon
 test("only real YYYY-MM-DD calendar dates are accepted", () => {
   for (const value of ["2026-02-30", "2026-13-01", "2026-00-10", "2026-5-20", "2026-05-20T00:00", "", "20260520"]) {
     assert.equal(addCalendarMonths(value, 6), null, value);
+    assert.equal(addCalendarDays(value, -1), null, value);
     assert.equal(calendarDaysBetween(value, "2026-11-20"), null, value);
     assert.equal(completedCalendarMonths(value, "2026-11-20"), null, value);
+  }
+});
+
+test("moves whole calendar days across months, years, leap days and daylight-saving changes", () => {
+  assert.equal(addCalendarDays("2026-11-05", -1), "2026-11-04");
+  assert.equal(addCalendarDays("2026-12-01", -1), "2026-11-30", "into a 30-day month");
+  assert.equal(addCalendarDays("2027-01-01", -1), "2026-12-31", "into the previous year");
+  assert.equal(addCalendarDays("2028-03-01", -1), "2028-02-29", "a leap day");
+  assert.equal(addCalendarDays("2027-03-01", -1), "2027-02-28", "no leap day");
+  // US daylight saving ends on 2026-11-01 and starts on 2027-03-14; those days are 25 and 23 hours long.
+  assert.equal(addCalendarDays("2026-11-02", -1), "2026-11-01");
+  assert.equal(addCalendarDays("2026-11-01", -1), "2026-10-31");
+  assert.equal(addCalendarDays("2027-03-15", -1), "2027-03-14");
+  assert.equal(addCalendarDays("2027-03-14", -1), "2027-03-13");
+  assert.equal(addCalendarDays("2026-12-31", 1), "2027-01-01");
+  assert.equal(addCalendarDays("2026-11-05", 0), "2026-11-05");
+  for (let offset = -400; offset <= 400; offset += 1) {
+    const moved = addCalendarDays("2026-11-05", offset)!;
+    assert.equal(calendarDaysBetween("2026-11-05", moved), offset, moved);
   }
 });
 
