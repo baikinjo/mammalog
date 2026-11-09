@@ -2,13 +2,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   correctFamilyMealFoods,
+  DAILY_ROUTINE_LOG_LIMIT,
   loadArchivedCustomIngredients,
   loadCustomIngredients,
   loadDailyRecommendation,
+  loadDailyRoutineLog,
+  loadDailyRoutineLogs,
   loadFamilyMealRecords,
   loadFamilyWorkspace,
   MealFoodCorrectionError,
   saveCustomIngredient,
+  saveDailyRoutineLog,
   saveFamilyMealRecord,
   signInFamilyAnonymously,
   updateCustomIngredient,
@@ -19,7 +23,7 @@ import {
 } from "../lib/family-repository";
 import { ingredientById } from "../lib/ingredient-catalog";
 import { chooseNextIngredient } from "../lib/recommendation-engine";
-import type { BabyProfile } from "../lib/domain";
+import type { BabyProfile, DailyRoutineLog } from "../lib/domain";
 
 type RestCall = { method: string; path: string; query: string; params: URLSearchParams; body: unknown };
 type RestReply = { status: number; body?: unknown };
@@ -614,4 +618,144 @@ test("loads the family's removed foods and updates only a stored day snapshot's 
   assert.match(calls[0].query, /child_id=eq\.child-1/);
   assert.match(calls[0].query, /recommendation_date=eq\.2026-09-01/);
   assert.deepEqual(calls[0].body, { output_snapshot: snapshot }, "the inputs it was computed from stay");
+});
+
+test("a day's snack foods load per snack, and rows from before the snack upgrade read as not recorded", async () => {
+  calls.length = 0;
+  const routineRow = {
+    child_id: "child-1", milk_ml: 650, cup_practice: true, spoon_practice: false, finger_food: true, note: "컵으로 조금 마심",
+    updated_by: "user-123", updated_at: "2026-10-04T20:00:00+00:00",
+  };
+  route = () => ({
+    status: 200,
+    body: [
+      { ...routineRow, log_date: "2026-10-04", snack_count: 2, snack_foods: [["banana", "yogurt"], ["banana"]] },
+      { ...routineRow, log_date: "2026-10-03", snack_count: 3, snack_foods: [[], ["custom-archived"]] },
+      { ...routineRow, log_date: "2026-10-02", snack_count: 0, snack_foods: [] },
+      // Saved before routine_snack_foods.sql ran: the row has no snack_foods column.
+      { ...routineRow, log_date: "2026-10-01", snack_count: 2, note: null },
+    ],
+  });
+  const logs = await loadDailyRoutineLogs("child-1");
+  assert.deepEqual(summary(), ["GET daily_routine_logs"]);
+  assert.match(calls[0].query, /child_id=eq\.child-1/);
+  assert.deepEqual([calls[0].params.get("order"), calls[0].params.get("limit")], ["log_date.desc", String(DAILY_ROUTINE_LOG_LIMIT)], "the latest rows only");
+  assert.deepEqual(logs.map((log) => [log.date, log.snackCount, log.snackFoods]), [
+    ["2026-10-04", 2, [["banana", "yogurt"], ["banana"]]],
+    ["2026-10-03", 3, [[], ["custom-archived"]]],
+    ["2026-10-02", 0, []],
+    ["2026-10-01", 2, []],
+  ]);
+  assert.deepEqual(
+    [logs[0].milkMl, logs[0].cupPractice, logs[0].spoonPractice, logs[0].fingerFood, logs[0].note, logs[3].note],
+    [650, true, false, true, "컵으로 조금 마심", ""],
+  );
+
+  // A stored value that does not fit the day's snacks is reported, never trimmed into something else.
+  for (const snackFoods of [[["banana"], ["apple"]], [["banana", "banana"]], [[""]], ["banana"], null]) {
+    route = () => ({ status: 200, body: [{ ...routineRow, log_date: "2026-10-05", snack_count: 1, snack_foods: snackFoods }] });
+    await assert.rejects(loadDailyRoutineLogs("child-1"), /snack foods/, JSON.stringify(snackFoods));
+  }
+});
+
+test("one day's routine is read on its own, and only a missing row reads as a day with no routine", async () => {
+  calls.length = 0;
+  const stored = {
+    child_id: "child-1", log_date: "2026-08-01", milk_ml: 735, snack_count: 2, snack_foods: [["pear", "yogurt"], ["sweet-potato"]],
+    cup_practice: true, spoon_practice: false, finger_food: true, note: "늦은 오후 간식", updated_by: "user-123", updated_at: "2026-08-01T21:00:00+00:00",
+  };
+  route = () => ({ status: 200, body: [stored] });
+  assert.deepEqual(await loadDailyRoutineLog("child-1", "2026-08-01"), {
+    childId: "child-1", date: "2026-08-01", milkMl: 735, snackCount: 2, snackFoods: [["pear", "yogurt"], ["sweet-potato"]],
+    cupPractice: true, spoonPractice: false, fingerFood: true, note: "늦은 오후 간식", updatedBy: "user-123", updatedAt: "2026-08-01T21:00:00+00:00",
+  });
+  assert.deepEqual(summary(), ["GET daily_routine_logs"]);
+  assert.deepEqual(
+    [calls[0].params.get("child_id"), calls[0].params.get("log_date"), calls[0].params.get("limit")],
+    ["eq.child-1", "eq.2026-08-01", null],
+    "exactly that child's day, however old",
+  );
+
+  // A row from before the snack upgrade, and a day with no row.
+  route = () => ({ status: 200, body: [Object.fromEntries(Object.entries(stored).filter(([key]) => key !== "snack_foods"))] });
+  assert.deepEqual((await loadDailyRoutineLog("child-1", "2026-08-01"))?.snackFoods, []);
+  route = () => ({ status: 200, body: [] });
+  assert.equal(await loadDailyRoutineLog("child-1", "2026-08-02"), null);
+
+  // A failed read, or a stored value that does not fit the day, is reported and never read as a day with no routine.
+  route = () => ({ status: 500, body: { code: "XX000", message: "injected failure", details: null, hint: null } });
+  await assert.rejects(loadDailyRoutineLog("child-1", "2026-08-01"), { code: "XX000" });
+  // A table reported missing still lists no latest rows, but the day itself was not read: it may have a row.
+  for (const [code, message] of [
+    ["PGRST205", "Could not find the table 'public.daily_routine_logs' in the schema cache"],
+    ["42P01", "relation \"public.daily_routine_logs\" does not exist"],
+  ]) {
+    route = () => ({ status: 404, body: { code, message, details: null, hint: null } });
+    assert.deepEqual(await loadDailyRoutineLogs("child-1"), [], code);
+    await assert.rejects(loadDailyRoutineLog("child-1", "2026-08-01"), { code }, code);
+  }
+  // postgrest-js returns a reply without a body with no error and no rows.
+  for (const status of [404, 200]) {
+    route = () => ({ status });
+    await assert.rejects(loadDailyRoutineLog("child-1", "2026-08-01"), /could not be read/, String(status));
+  }
+  route = () => ({ status: 200, body: [stored, { ...stored, milk_ml: 600 }] });
+  await assert.rejects(loadDailyRoutineLog("child-1", "2026-08-01"), /could not be read/);
+  route = () => ({ status: 200, body: [{ ...stored, snack_foods: [["pear"], ["yogurt"], ["apple"]] }] });
+  await assert.rejects(loadDailyRoutineLog("child-1", "2026-08-01"), /snack foods/);
+});
+test("saving a day's routine writes each snack's foods on that day's row and nothing else", async () => {
+  await signInFamilyAnonymously();
+  const day: DailyRoutineLog = {
+    childId: "child-1", date: "2026-10-04", milkMl: 620, snackCount: 3, snackFoods: [["banana", "yogurt"], ["banana"], []],
+    cupPractice: true, spoonPractice: false, fingerFood: true, note: " 간식 뒤 컵 연습 ",
+  };
+  const saved = async (log: DailyRoutineLog) => {
+    calls.length = 0;
+    route = () => ({ status: 201 });
+    await saveDailyRoutineLog(log);
+    assert.deepEqual(summary(), ["POST daily_routine_logs"], "only the day's routine row is written");
+    assert.equal(calls[0].params.get("on_conflict"), "child_id,log_date");
+    return calls[0].body as Record<string, unknown>;
+  };
+
+  const body = await saved(day);
+  assert.deepEqual(body, {
+    child_id: "child-1", log_date: "2026-10-04", milk_ml: 620, snack_count: 3, snack_foods: [["banana", "yogurt"], ["banana"]],
+    cup_practice: true, spoon_practice: false, finger_food: true, note: "간식 뒤 컵 연습", updated_by: "user-123", updated_at: body.updated_at,
+  });
+  // Fewer snacks keep only the remaining snacks' foods; an unrecorded snack before a recorded one keeps its place.
+  assert.deepEqual((await saved({ ...day, snackCount: 1, snackFoods: [["banana", "yogurt"]] })).snack_foods, [["banana", "yogurt"]]);
+  assert.deepEqual((await saved({ ...day, snackCount: 2, snackFoods: [[], ["custom-archived"]] })).snack_foods, [[], ["custom-archived"]]);
+  // A count-only day and a day without snacks store no snack foods, clearing any stored before.
+  assert.deepEqual((await saved({ ...day, snackCount: 2, snackFoods: [[], []] })).snack_foods, []);
+  assert.deepEqual((await saved({ ...day, snackCount: 0, snackFoods: [] })).snack_foods, []);
+});
+
+test("snack foods that do not fit the day, or a database without the snack column, are never saved", async () => {
+  await signInFamilyAnonymously();
+  const day: DailyRoutineLog = {
+    childId: "child-1", date: "2026-10-04", milkMl: null, snackCount: 1, snackFoods: [["banana"]],
+    cupPractice: false, spoonPractice: false, fingerFood: false, note: "",
+  };
+  for (const snackFoods of [[["banana"], ["apple"]], [["banana", "banana"]], [[""]]]) {
+    calls.length = 0;
+    await assert.rejects(saveDailyRoutineLog({ ...day, snackFoods }), /snack foods/, JSON.stringify(snackFoods));
+    assert.deepEqual(calls, [], "nothing is written");
+  }
+
+  // Until routine_snack_foods.sql runs the save fails once and is never retried without the foods.
+  calls.length = 0;
+  route = () => ({
+    status: 400,
+    body: { code: "PGRST204", message: "Could not find the 'snack_foods' column of 'daily_routine_logs' in the schema cache", details: null, hint: null },
+  });
+  await assert.rejects(saveDailyRoutineLog(day), { code: "PGRST204" });
+  assert.deepEqual(summary(), ["POST daily_routine_logs"]);
+  assert.deepEqual((calls[0].body as { snack_foods: unknown }).snack_foods, [["banana"]]);
+
+  calls.length = 0;
+  route = () => ({ status: 500, body: { code: "XX000", message: "injected failure", details: null, hint: null } });
+  await assert.rejects(saveDailyRoutineLog({ ...day, snackCount: 0, snackFoods: [] }), { code: "XX000" });
+  assert.deepEqual(summary(), ["POST daily_routine_logs"]);
 });

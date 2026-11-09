@@ -72,12 +72,14 @@ import {
   correctFamilyMealFoods,
   createFamilyInvite,
   createFamilyWorkspace,
+  DAILY_ROUTINE_LOG_LIMIT,
   deleteMyAccount,
   ensureDefaultChild,
   joinFamilyWithCode,
   loadArchivedCustomIngredients,
   loadCustomIngredients,
   loadDailyRecommendation,
+  loadDailyRoutineLog,
   loadDailyRoutineLogs,
   loadFamilyMealRecords,
   loadRecommendationInputs,
@@ -144,6 +146,16 @@ type RecordTarget = {
  * to the account, family and child the meal was saved for and is never shown for another.
  */
 type ReviewReminder = Pick<RecordTarget, "userId" | "householdId" | "childId"> & { message: string; ingredientIds: string[] };
+/** A day whose routine sheet was asked for, with the account, family and child it was asked under. */
+type RoutineRequest = Pick<RecordTarget, "householdId" | "userId" | "date"> & { childId: string };
+/**
+ * The day whose routine the open sheet will write, captured when it was asked for: a save goes only to this account,
+ * family, child and date. `initialLog` is that day's routine as read on its own just before the sheet opened (null: the
+ * day has none); foods already on its snacks stay on them.
+ */
+type RoutineTarget = RoutineRequest & { initialLog: DailyRoutineLog | null };
+/** What the routine sheet saves; the child and the date come from the captured target. */
+type RoutineDraft = Omit<DailyRoutineLog, "childId" | "date" | "updatedBy" | "updatedAt">;
 
 const STALE_MEAL_CHOICE_NOTICE = "고른 메뉴가 새 기록이나 반응·설정 변경으로 지금은 맞지 않아 기본 추천으로 돌아왔어요.";
 const STALE_RECORD_NOTICE = "새 기록이나 반응·설정 변경으로 기록하려던 식사 내용이 바뀌었어요. 바뀐 추천을 확인한 뒤 다시 기록해주세요.";
@@ -152,6 +164,8 @@ const START_REQUIRED_NOTICE = "이유식 시작을 확정한 뒤 실제로 먹�
 const BEFORE_START_NOTICE = "확정한 이유식 시작일부터 이미 먹인 식사를 기록할 수 있어요.";
 const RECORD_CHANGED_NOTICE = "다른 보호자가 이 기록의 재료를 먼저 고쳤어요. 기록을 다시 확인한 뒤 수정해주세요.";
 const UNKNOWN_FOOD_NOTICE = "가족 재료 목록에 없는 재료가 있어 저장하지 않았어요. 재료를 다시 골라주세요.";
+const ROUTINE_SNACK_FOODS_SQL_NOTICE = "Supabase에서 routine_snack_foods.sql을 한 번 실행해야 하루 흐름을 저장할 수 있어요.";
+const ROUTINE_LOAD_FAILED_NOTICE = "수유·간식·먹기 연습 기록을 불러오지 못했어요. 연결 상태를 확인하고 다시 시도해주세요.";
 const FOOD_CORRECTION_UNCERTAIN_NOTICE = "저장 중 문제가 생겨 이 기록의 재료가 바뀌었는지 확인하지 못했어요. 기록을 다시 열어 재료를 확인해주세요.";
 // Shown with a meal recorded as actually given, so it is never mistaken for a book recommendation.
 const WITHOUT_RECOMMENDATION_NOTE = "실제로 먹인 식사 기록 · 책 추천 메뉴가 아니에요";
@@ -1431,6 +1445,7 @@ function RecordsView({
   onAddRecord,
   onEditRecord,
   onEditRoutine,
+  olderDayRoutine,
   recordOnly,
 }: {
   records: FamilyMealRecord[];
@@ -1452,6 +1467,12 @@ function RecordsView({
   onAddRecord: (date: string) => void;
   onEditRecord: (record: FamilyMealRecord) => void;
   onEditRoutine: (date: string) => void;
+  /**
+   * The selected day's routine when the day is older than every row in `routineLogs` (only the latest are kept), read on
+   * its own: what it last read (`log`, null: none saved) and whether its latest read `failed`, or still being read. Null
+   * when `routineLogs` cover the day.
+   */
+  olderDayRoutine: { log: DailyRoutineLog | null; failed: boolean } | "loading" | null;
   /** Before six months no food group or texture is suggested; the board only sums up what was recorded. */
   recordOnly: boolean;
 }) {
@@ -1472,7 +1493,11 @@ function RecordsView({
   const completedMealCount = Array.from({ length: mealCount }, (_, index) => index + 1)
     .filter((mealIndex) => selectedMealIndexes.has(mealIndex)).length;
   const isFutureDate = selectedDate > todayId;
-  const selectedRoutine = routineLogs.find((log) => log.date === selectedDate);
+  const selectedRoutine = olderDayRoutine === null
+    ? routineLogs.find((log) => log.date === selectedDate)
+    : typeof olderDayRoutine === "object" ? olderDayRoutine.log ?? undefined : undefined;
+  // What an older day last read stays in view after a failed read, shown with the failure: never as read now.
+  const olderDayReadFailed = typeof olderDayRoutine === "object" && olderDayRoutine?.failed === true;
   const canAddRecord = !isFutureDate && completedMealCount < mealCount;
   const weeklyBalance = useMemo(
     () => createWeeklyBalance(profile, ingredients, ingredientStates, mealHistory, parseDateId(todayId), recordIngredients),
@@ -1561,12 +1586,28 @@ function RecordsView({
       <section className="section-card routine-summary-card">
         <div className="section-heading">
           <div><span className="overline">{selectedLabel}</span><h2>수유·간식·먹기 연습</h2></div>
-          {!isFutureDate && <button className="add-past-record-button" type="button" onClick={() => onEditRoutine(selectedDate)}>{selectedRoutine ? "수정" : "기록"}</button>}
+          {!isFutureDate && <button className="add-past-record-button" type="button" onClick={() => onEditRoutine(selectedDate)}>{olderDayRoutine === "loading" || olderDayReadFailed ? "열기" : selectedRoutine ? "수정" : "기록"}</button>}
         </div>
+        {olderDayReadFailed && (
+          <div className="meal-option-notice" role="alert"><p>{ROUTINE_LOAD_FAILED_NOTICE}</p></div>
+        )}
         {selectedRoutine ? (
           <div className="routine-stat-grid">
             <div><span>수유량</span><strong>{selectedRoutine.milkMl == null ? "미기록" : `${selectedRoutine.milkMl}ml`}</strong></div>
             <div><span>간식</span><strong>{selectedRoutine.snackCount}회</strong></div>
+            {selectedRoutine.snackFoods.some((foods) => foods.length > 0) && (
+              <div className="routine-snack-foods">
+                <span>간식으로 먹인 재료</span>
+                {Array.from({ length: selectedRoutine.snackCount }, (_, index) => {
+                  const foods = selectedRoutine.snackFoods[index] ?? [];
+                  return (
+                    <strong key={index}>{index + 1}번째 간식: {foods.length
+                      ? foods.map((id) => recordIngredients.find((ingredient) => ingredient.id === id)?.name ?? "알 수 없는 재료").join(" · ")
+                      : "재료 미기록"}</strong>
+                  );
+                })}
+              </div>
+            )}
             <div className="routine-skills"><span>먹기 연습</span><strong>{[
               selectedRoutine.fingerFood && "핑거푸드",
               selectedRoutine.spoonPractice && "숟가락",
@@ -1574,7 +1615,9 @@ function RecordsView({
             ].filter(Boolean).join(" · ") || "미기록"}</strong></div>
             {selectedRoutine.note && <p>{selectedRoutine.note}</p>}
           </div>
-        ) : (
+        ) : olderDayRoutine === "loading" ? (
+          <p className="routine-empty" role="status">이날의 하루 흐름 기록을 불러오는 중이에요.</p>
+        ) : !olderDayReadFailed && (
           <p className="routine-empty">이날의 수유량, 간식과 컵·숟가락·핑거푸드 연습을 함께 남길 수 있어요.</p>
         )}
       </section>
@@ -2850,24 +2893,48 @@ function MealTimesSettingSheet({
 
 function RoutineLogSheet({
   targetDate,
-  childId,
   initialLog,
+  foodChoices,
+  knownFoods,
   onClose,
   onSave,
 }: {
   targetDate: string;
-  childId: string;
-  initialLog?: DailyRoutineLog;
+  /** The day's routine as it was when the sheet opened, if one was recorded. */
+  initialLog: DailyRoutineLog | null;
+  /** Foods the family can choose for a snack: the catalog and its own current foods. */
+  foodChoices: IngredientDefinition[];
+  /** `foodChoices` plus the family's removed foods, so a snack that still holds one shows its name. */
+  knownFoods: IngredientDefinition[];
   onClose: () => void;
-  onSave: (log: DailyRoutineLog) => Promise<void>;
+  onSave: (draft: RoutineDraft) => Promise<void>;
 }) {
   const [milkMl, setMilkMl] = useState(initialLog?.milkMl?.toString() ?? "");
   const [snackCount, setSnackCount] = useState(initialLog?.snackCount ?? 0);
+  // One list of foods per snack, in snack order; an empty list is a snack whose foods are not recorded.
+  const [snackFoods, setSnackFoods] = useState(() => Array.from(
+    { length: initialLog?.snackCount ?? 0 },
+    (_, index) => [...(initialLog?.snackFoods[index] ?? [])],
+  ));
   const [fingerFood, setFingerFood] = useState(initialLog?.fingerFood ?? false);
   const [spoonPractice, setSpoonPractice] = useState(initialLog?.spoonPractice ?? false);
   const [cupPractice, setCupPractice] = useState(initialLog?.cupPractice ?? false);
   const [note, setNote] = useState(initialLog?.note ?? "");
   const [saving, setSaving] = useState(false);
+  const knownFoodById = useMemo(() => new Map(knownFoods.map((food) => [food.id, food])), [knownFoods]);
+  // A count above three from an older record stays selectable for that day instead of being changed silently.
+  const snackCountOptions = initialLog && initialLog.snackCount > 3 ? [0, 1, 2, 3, initialLog.snackCount] : [0, 1, 2, 3];
+  const changeSnackCount = (count: number) => {
+    setSnackCount(count);
+    // Fewer snacks drop the foods of the snacks taken away; more snacks start with no foods.
+    setSnackFoods((current) => Array.from({ length: count }, (_, index) => current[index] ?? []));
+  };
+  const addSnackFood = (snackIndex: number, id: string) => setSnackFoods((current) => current.map((foods, index) => (
+    index === snackIndex && !foods.includes(id) ? [...foods, id] : foods
+  )));
+  const removeSnackFood = (snackIndex: number, id: string) => setSnackFoods((current) => current.map((foods, index) => (
+    index === snackIndex ? foods.filter((foodId) => foodId !== id) : foods
+  )));
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -2875,10 +2942,9 @@ function RoutineLogSheet({
     setSaving(true);
     try {
       await onSave({
-        childId,
-        date: targetDate,
         milkMl: milkMl === "" ? null : Number(milkMl),
         snackCount,
+        snackFoods,
         fingerFood,
         spoonPractice,
         cupPractice,
@@ -2905,9 +2971,48 @@ function RoutineLogSheet({
           <fieldset className="form-field">
             <legend>간식 횟수</legend>
             <div className="condition-picker routine-count-picker">
-              {[0, 1, 2, 3].map((count) => <button className={snackCount === count ? "is-selected" : ""} type="button" key={count} onClick={() => setSnackCount(count)}>{count}회</button>)}
+              {snackCountOptions.map((count) => <button className={snackCount === count ? "is-selected" : ""} type="button" key={count} onClick={() => changeSnackCount(count)}>{count}회</button>)}
             </div>
           </fieldset>
+          {snackCount > 0 && (
+            <fieldset className="form-field">
+              <legend>간식으로 먹인 재료</legend>
+              {snackFoods.map((foods, snackIndex) => {
+                const snackLabel = `${snackIndex + 1}번째 간식`;
+                return (
+                  <div className="snack-food-row" role="group" aria-label={snackLabel} key={snackIndex}>
+                    <strong>{snackLabel}</strong>
+                    {foods.length ? (
+                      <div className="actual-food-selected">
+                        {foods.map((id) => {
+                          const food = knownFoodById.get(id);
+                          const name = food?.name ?? "알 수 없는 재료";
+                          return (
+                            <button type="button" key={id} onClick={() => removeSnackFood(snackIndex, id)} aria-label={`${snackLabel}에서 ${name} 빼기`}>
+                              {food && <IngredientVisual ingredient={food} className="is-chip" />}
+                              <span>{name}</span>
+                              <X size={13} aria-hidden="true" />
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : <small>재료 미기록</small>}
+                    <select value="" onChange={(event) => { if (event.target.value) addSnackFood(snackIndex, event.target.value); }} aria-label={`${snackLabel}에 먹인 재료 추가`}>
+                      <option value="">재료 추가</option>
+                      {categoryOrder.map((category) => {
+                        const choices = foodChoices.filter((food) => food.category === category && !foods.includes(food.id));
+                        return choices.length > 0 && (
+                          <optgroup label={categoryLabels[category]} key={category}>
+                            {choices.map((food) => <option value={food.id} key={food.id}>{food.name}</option>)}
+                          </optgroup>
+                        );
+                      })}
+                    </select>
+                  </div>
+                );
+              })}
+            </fieldset>
+          )}
           <fieldset className="form-field">
             <legend>오늘 연습한 것</legend>
             <div className="readiness-picker compact-readiness">
@@ -3135,8 +3240,14 @@ export function MealApp() {
   const [todayId, setTodayId] = useState(() => toDateId(new Date()));
   const [records, setRecords] = useState<FamilyMealRecord[]>([]);
   const [routineLogs, setRoutineLogs] = useState<DailyRoutineLog[]>([]);
-  const [routineLogOpen, setRoutineLogOpen] = useState(false);
-  const [routineTargetDate, setRoutineTargetDate] = useState(() => toDateId(new Date()));
+  const [routineTarget, setRoutineTarget] = useState<RoutineTarget | null>(null);
+  // The routine sheet asked for whose day is still being read. Only it may open, and anything that moves on (a newer
+  // request, another day, tab or sheet, or another account, family or child) clears it.
+  const routineRequestRef = useRef<RoutineRequest | null>(null);
+  // The selected day when it is older than every routine row kept, read on its own for the 기록 tab's summary.
+  const [olderRoutineDay, setOlderRoutineDay] = useState<
+    { childId: string; date: string; log: DailyRoutineLog | null; failed: boolean } | null
+  >(null);
   const [familyWorkspace, setFamilyWorkspace] = useState<FamilyWorkspace | null>(null);
   const [familyDataRefreshError, setFamilyDataRefreshError] = useState<string | null>(null);
   const familyDataUserIdRef = useRef<string | null>(null);
@@ -3211,6 +3322,16 @@ export function MealApp() {
     () => createAdaptiveReview(recommendationProfile(displayProfile), mealHistory, routineLogs),
     [displayProfile, mealHistory, routineLogs],
   );
+  // Only a child's latest routine rows are kept; with all of them kept (fewer than the limit) every other day has none.
+  const currentChildId = currentChild?.id ?? null;
+  const selectedDayIsOlder = currentChildId !== null
+    && routineLogs.length >= DAILY_ROUTINE_LOG_LIMIT
+    && !routineLogs.some((log) => log.date <= selectedDate);
+  const olderDayRoutine = !selectedDayIsOlder
+    ? null
+    : olderRoutineDay?.childId === currentChildId && olderRoutineDay.date === selectedDate
+      ? olderRoutineDay
+      : "loading";
   // An edit is bound to the record it opened for; a new record never turns into an edit of someone else's record.
   const editingRecord = recordTarget?.mealPlanId
     ? records.find((record) => record.mealPlanId === recordTarget.mealPlanId) ?? null
@@ -3282,6 +3403,8 @@ export function MealApp() {
       if (!isLatestRequest()) return;
       if (!data.session?.user) {
         setRecordTarget(null);
+        setRoutineTarget(null);
+        routineRequestRef.current = null;
         setFamilyWorkspace(null);
         setRecords([]);
         setIngredientStates([]);
@@ -3299,6 +3422,8 @@ export function MealApp() {
       if (familyDataUserIdRef.current !== data.session.user.id) {
         // A record sheet opened under the previous account must not save under this one.
         setRecordTarget(null);
+        setRoutineTarget(null);
+        routineRequestRef.current = null;
         setFamilyWorkspace(null);
         setRecords([]);
         setIngredientStates([]);
@@ -3321,6 +3446,7 @@ export function MealApp() {
       if (!child || !householdId) {
         const nextCustomIngredients = householdId ? await loadCustomIngredients(householdId) : [];
         if (!isLatestRequest()) return;
+        routineRequestRef.current = null;
         setFamilyWorkspace(nextWorkspace);
         setRecords([]);
         setIngredientStates([]);
@@ -3340,6 +3466,10 @@ export function MealApp() {
         loadDailyRoutineLogs(child.id).catch(() => null),
       ]);
       if (!isLatestRequest()) return;
+      // A routine sheet still being read opens only for the family and child it was asked for.
+      if (routineRequestRef.current?.householdId !== householdId || routineRequestRef.current?.childId !== child.id) {
+        routineRequestRef.current = null;
+      }
       setFamilyWorkspace(nextWorkspace);
       setRecords(nextRecords);
       setIngredientStates(recommendationInputs.states);
@@ -3354,9 +3484,7 @@ export function MealApp() {
         time: child.preferredMealTime,
         style: preparationStyleLabels[child.preparationStyle],
       });
-      setFamilyDataRefreshError(nextRoutineLogs
-        ? null
-        : "수유·간식·먹기 연습 기록을 불러오지 못했어요. 연결 상태를 확인하고 다시 시도해주세요.");
+      setFamilyDataRefreshError(nextRoutineLogs ? null : ROUTINE_LOAD_FAILED_NOTICE);
     } catch {
       if (!isLatestRequest()) return;
       setFamilyDataRefreshError("가족 기록을 불러오지 못했어요. 연결 상태를 확인하고 다시 시도해주세요.");
@@ -3409,6 +3537,38 @@ export function MealApp() {
       window.clearInterval(interval);
     };
   }, [refreshFamilyData]);
+
+  // A routine sheet still being read is not opened once the family moved on to another tab, day or sheet.
+  useEffect(() => {
+    routineRequestRef.current = null;
+  }, [activeTab, recordTarget, selectedDate, selectedIngredient]);
+
+  useEffect(() => {
+    if (activeTab !== "records" || currentChildId === null || !selectedDayIsOlder) return;
+    const childId = currentChildId;
+    const date = selectedDate;
+    let current = true;
+    // Read again whenever the kept rows are refreshed (so also after a save), like the days they cover. A failed read
+    // keeps what the same day last read but marks it failed, so it is shown neither as a day with no routine nor as read
+    // now, whatever else the refresh read.
+    loadDailyRoutineLog(childId, date).then(
+      (log) => {
+        if (current) setOlderRoutineDay({ childId, date, log, failed: false });
+      },
+      () => {
+        if (!current) return;
+        setOlderRoutineDay((previous) => ({
+          childId,
+          date,
+          log: previous?.childId === childId && previous.date === date ? previous.log : null,
+          failed: true,
+        }));
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [activeTab, currentChildId, routineLogs, selectedDate, selectedDayIsOlder]);
 
   const saveRecord = async (draft: RecordDraft) => {
     if (!currentChild) {
@@ -3809,17 +3969,53 @@ export function MealApp() {
     }
   };
 
-  const saveRoutineLog = async (log: DailyRoutineLog) => {
+  const saveRoutineLog = async (draft: RoutineDraft) => {
+    const target = routineTarget;
+    if (!target) return;
+    const rejectRoutine = (message: string) => {
+      setRoutineTarget(null);
+      showToast(message);
+    };
+    if (!currentChild) {
+      setActiveTab("profile");
+      rejectRoutine("먼저 우리 아이 탭에서 가족 로그인을 연결해주세요.");
+      return;
+    }
+    // Nothing is written unless the account, family and child are the ones the sheet was opened for, on a day that has come.
+    if (
+      target.childId !== currentChild.id
+      || target.householdId !== (familyWorkspace?.householdId ?? null)
+      || target.userId !== familyDataUserIdRef.current
+    ) {
+      rejectRoutine("가족 계정이나 아이 정보가 바뀌어 이 기록은 저장하지 않았어요. 다시 열어 기록해주세요.");
+      return;
+    }
+    if (target.date > todayId) {
+      rejectRoutine("미래 날짜의 하루 흐름은 아직 기록할 수 없어요.");
+      return;
+    }
+    // Each snack food is from the catalog or this family's list, or was already on the day's snacks (a food the family has
+    // removed from its list since stays on the days it was recorded with).
+    const choosableIds = new Set([...allIngredients.map((ingredient) => ingredient.id), ...(target.initialLog?.snackFoods.flat() ?? [])]);
+    if (draft.snackFoods.some((foods) => foods.some((id) => !choosableIds.has(id)))) {
+      rejectRoutine(UNKNOWN_FOOD_NOTICE);
+      return;
+    }
     try {
-      await saveDailyRoutineLog(log);
+      await saveDailyRoutineLog({ ...draft, childId: target.childId, date: target.date });
       await refreshFamilyData();
-      setRoutineLogOpen(false);
+      setRoutineTarget(null);
       showToast("하루 흐름을 가족 기록에 저장했어요.");
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      showToast(/daily_routine_logs|schema cache|does not exist/i.test(message)
-        ? "Supabase에서 통합 기록 SQL을 한 번 실행해야 해요."
-        : "하루 흐름을 저장하지 못했어요. 잠시 후 다시 시도해주세요.");
+      // Supabase returns a request's error as a plain object, not an Error.
+      const message = error instanceof Error ? error.message : (error as { message?: string } | null)?.message ?? String(error);
+      // Until routine_snack_foods.sql runs the database has no snack food column, and nothing was saved.
+      const snackFoodsColumnMissing = (error as { code?: unknown } | null)?.code === "PGRST204" && /snack_foods/.test(message);
+      showToast(snackFoodsColumnMissing
+        ? ROUTINE_SNACK_FOODS_SQL_NOTICE
+        : /daily_routine_logs|schema cache|does not exist/i.test(message)
+          ? "Supabase에서 통합 기록 SQL을 한 번 실행해야 해요."
+          : "하루 흐름을 저장하지 못했어요. 잠시 후 다시 시도해주세요.");
     }
   };
 
@@ -4015,14 +4211,40 @@ export function MealApp() {
     openRecordSheet({ date, mealIndex: nextMeal.index, meal: chosenOption ?? nextMeal, stage: plan.stage, mealPlanId: null });
   };
 
-  const editRoutineForDate = (date: string) => {
+  const editRoutineForDate = async (date: string) => {
     if (!currentChild) {
       setActiveTab("profile");
       showToast("먼저 우리 아이 탭에서 가족 로그인을 연결해주세요.");
       return;
     }
-    setRoutineTargetDate(date);
-    setRoutineLogOpen(true);
+    if (date > todayId) {
+      showToast("미래 날짜의 하루 흐름은 아직 기록할 수 없어요.");
+      return;
+    }
+    const request: RoutineRequest = {
+      childId: currentChild.id,
+      householdId: familyWorkspace?.householdId ?? null,
+      userId: familyDataUserIdRef.current,
+      date,
+    };
+    routineRequestRef.current = request;
+    // The day is read on its own, never taken from the latest routine rows kept for this tab: a saved day missing from
+    // them, or a read that failed, would open as a day with no routine, and saving it would replace what was saved.
+    let initialLog: DailyRoutineLog | null;
+    try {
+      initialLog = await loadDailyRoutineLog(request.childId, request.date);
+    } catch {
+      if (routineRequestRef.current === request) {
+        routineRequestRef.current = null;
+        showToast(ROUTINE_LOAD_FAILED_NOTICE);
+      }
+      return;
+    }
+    // Opened only if nothing moved on while the day was read: no newer request, other day, tab, sheet or account, family
+    // or child.
+    if (routineRequestRef.current !== request || familyDataUserIdRef.current !== request.userId) return;
+    routineRequestRef.current = null;
+    setRoutineTarget({ ...request, initialLog });
   };
 
   const updateSetting = async (value: string) => {
@@ -4240,7 +4462,8 @@ export function MealApp() {
             onGoToday={goCalendarToday}
             onAddRecord={addRecordForDate}
             onEditRecord={openRecordEditor}
-            onEditRoutine={editRoutineForDate}
+            onEditRoutine={(date) => void editRoutineForDate(date)}
+            olderDayRoutine={olderDayRoutine}
             recordOnly={currentPlan.recordOnly}
           />
         )}
@@ -4292,12 +4515,13 @@ export function MealApp() {
         />
       )}
 
-      {routineLogOpen && currentChild && (
+      {routineTarget && (
         <RoutineLogSheet
-          targetDate={routineTargetDate}
-          childId={currentChild.id}
-          initialLog={routineLogs.find((log) => log.date === routineTargetDate)}
-          onClose={() => setRoutineLogOpen(false)}
+          targetDate={routineTarget.date}
+          initialLog={routineTarget.initialLog}
+          foodChoices={allIngredients}
+          knownFoods={recordIngredients}
+          onClose={() => setRoutineTarget(null)}
           onSave={saveRoutineLog}
         />
       )}

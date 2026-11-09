@@ -135,33 +135,95 @@ interface ChildRow {
   development_skills?: (Partial<NonNullable<BabyProfile["skills"]>> & { mealTimes?: unknown }) | null;
 }
 
-export async function loadDailyRoutineLogs(childId: string): Promise<DailyRoutineLog[]> {
-  const { data, error } = await getSupabaseClient()
-    .from("daily_routine_logs")
-    .select("*")
-    .eq("child_id", childId)
-    .order("log_date", { ascending: false })
-    .limit(60);
-  if (error) {
-    // Until routine_logs.sql is applied the table does not exist; that means "no logs yet", not a failure.
-    if (error.code === "PGRST205" || error.code === "42P01") return [];
-    throw error;
+/**
+ * A day's snack foods as stored: one list of ingredient ids per snack, in snack order, no more lists than snacks and no
+ * food twice in one snack. Anything else is refused rather than trimmed, so a recorded food is never dropped silently.
+ */
+function checkedSnackFoods(value: unknown, snackCount: number): string[][] {
+  if (
+    !Array.isArray(value)
+    || value.length > snackCount
+    || !value.every((foods) => Array.isArray(foods)
+      && foods.every((id) => typeof id === "string" && id !== "")
+      && new Set(foods).size === foods.length)
+  ) {
+    throw new Error("Routine snack foods do not match the day's snacks.");
   }
-  return (data ?? []).map((row) => ({
+  return value.map((foods: string[]) => [...foods]);
+}
+
+interface DailyRoutineLogRow {
+  child_id: string;
+  log_date: string;
+  milk_ml: number | null;
+  snack_count: number | null;
+  /** Missing until routine_snack_foods.sql is applied. */
+  snack_foods?: unknown;
+  cup_practice: boolean | null;
+  spoon_practice: boolean | null;
+  finger_food: boolean | null;
+  note: string | null;
+  updated_by: string | null;
+  updated_at: string | null;
+}
+
+/** How many of a child's latest daily routine rows `loadDailyRoutineLogs` returns; an older day is read on its own. */
+export const DAILY_ROUTINE_LOG_LIMIT = 60;
+
+function dailyRoutineLogFromRow(row: DailyRoutineLogRow): DailyRoutineLog {
+  const snackCount = row.snack_count ?? 0;
+  return {
     childId: row.child_id,
     date: row.log_date,
     milkMl: row.milk_ml,
-    snackCount: row.snack_count ?? 0,
+    snackCount,
+    // Until routine_snack_foods.sql is applied rows have no snack_foods: no snack foods were recorded.
+    snackFoods: row.snack_foods === undefined ? [] : checkedSnackFoods(row.snack_foods, snackCount),
     cupPractice: Boolean(row.cup_practice),
     spoonPractice: Boolean(row.spoon_practice),
     fingerFood: Boolean(row.finger_food),
     note: row.note ?? "",
     updatedBy: row.updated_by,
     updatedAt: row.updated_at,
-  }));
+  };
+}
+
+export async function loadDailyRoutineLogs(childId: string): Promise<DailyRoutineLog[]> {
+  const { data, error } = await getSupabaseClient()
+    .from("daily_routine_logs")
+    .select("*")
+    .eq("child_id", childId)
+    .order("log_date", { ascending: false })
+    .limit(DAILY_ROUTINE_LOG_LIMIT);
+  if (error) {
+    // Until routine_logs.sql is applied the table does not exist; that means "no logs yet", not a failure.
+    if (error.code === "PGRST205" || error.code === "42P01") return [];
+    throw error;
+  }
+  return (data ?? []).map(dailyRoutineLogFromRow);
+}
+
+/**
+ * One day's routine, read on its own: it may be older than the rows `loadDailyRoutineLogs` returns. Null only when the
+ * read returned no row for the day. Every failed read throws, a table reported missing included (unlike the list): a
+ * day opened blank from it could be saved over a row that is there.
+ */
+export async function loadDailyRoutineLog(childId: string, date: string): Promise<DailyRoutineLog | null> {
+  const { data, error } = await getSupabaseClient()
+    .from("daily_routine_logs")
+    .select("*")
+    .eq("child_id", childId)
+    .eq("log_date", date);
+  if (error) throw error;
+  // postgrest-js reports a reply without a body (a 404 among them) with no error and no rows: that is no read either.
+  if (!Array.isArray(data) || data.length > 1) throw new Error("The day's routine could not be read.");
+  return data.length ? dailyRoutineLogFromRow(data[0]) : null;
 }
 
 export async function saveDailyRoutineLog(log: DailyRoutineLog): Promise<void> {
+  // Snacks after the last one with recorded foods are not stored as empty lists, so a day without snack foods stays [].
+  const snackFoods = checkedSnackFoods(log.snackFoods, log.snackCount);
+  while (snackFoods.length && !snackFoods[snackFoods.length - 1].length) snackFoods.pop();
   const client = getSupabaseClient();
   const { data: authData, error: authError } = await client.auth.getUser();
   if (authError) throw authError;
@@ -170,6 +232,9 @@ export async function saveDailyRoutineLog(log: DailyRoutineLog): Promise<void> {
     log_date: log.date,
     milk_ml: log.milkMl,
     snack_count: log.snackCount,
+    // Always written, so foods taken off a day are cleared too. Until routine_snack_foods.sql is applied the column is
+    // missing and the save fails (PGRST204); it is never retried without the snack foods.
+    snack_foods: snackFoods,
     cup_practice: log.cupPractice,
     spoon_practice: log.spoonPractice,
     finger_food: log.fingerFood,

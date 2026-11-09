@@ -270,6 +270,12 @@ export interface DailyRoutineLog {
   date: string;
   milkMl: number | null;
   snackCount: number;
+  /**
+   * The foods actually given at each snack, in snack order: `snackFoods[0]` holds the first snack's ingredient ids. It
+   * never has more lists than `snackCount`; a snack with no list, or an empty one, is a snack whose foods were not
+   * recorded. These are records only: they never count as meals, new-food observations or reactions.
+   */
+  snackFoods: string[][];
   cupPractice: boolean;
   spoonPractice: boolean;
   fingerFood: boolean;
