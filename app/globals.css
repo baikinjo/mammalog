@@ -1146,6 +1146,7 @@ button {
 .reaction-options input { position: absolute; opacity: 0; pointer-events: none; }
 .reaction-options span { display: grid; min-height: 45px; place-items: center; padding: 8px 10px; border: 1px solid var(--line); border-radius: 15px; color: var(--ink-soft); font-size: 11px; text-align: center; }
 .reaction-options input:checked + span { border-color: var(--sage); background: var(--sage-soft); color: var(--sage-deep); font-weight: 700; }
+.snack-reaction-options label:first-child { grid-column: 1 / -1; }
 
 .note-field { display: grid; margin: 26px 0 20px; }
 .actual-food-field { min-width: 0; }

@@ -3,6 +3,7 @@ import test from "node:test";
 import { ingredientCatalog } from "../lib/ingredient-catalog";
 import type { BabyProfile, ChildIngredientState, MealHistoryEntry } from "../lib/domain";
 import { createWeeklyBalance } from "../lib/weekly-balance";
+import { withSnackReactionHolds } from "../lib/recommendation-engine";
 
 const profile: BabyProfile = {
   id: "child",
@@ -37,6 +38,11 @@ test("summarizes the latest seven calendar days from actual meal history", () =>
   assert.equal(summary.metrics.find((metric) => metric.id === "fish")?.value, "2/2회");
   assert.equal(summary.metrics.find((metric) => metric.id === "texture")?.value, "7mm");
   assert.match(summary.focus, /과일이 빠진 날/);
+
+  // A snack reaction that holds new foods enters the history without its foods: the board is the same.
+  const withHolds = withSnackReactionHolds(history, [{ date: "2026-07-30", snackReactions: ["needs_review"] }, { date: "2026-07-31", snackReactions: ["texture_difficulty"] }]);
+  assert.equal(withHolds.length, history.length + 2);
+  assert.deepEqual(createWeeklyBalance(profile, ingredientCatalog, states, withHolds, new Date("2026-07-31T12:00:00.000Z")), summary);
 });
 
 test("does not flag food groups that have not been introduced yet", () => {

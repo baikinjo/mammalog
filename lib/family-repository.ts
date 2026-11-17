@@ -5,6 +5,7 @@ import type {
   DailyRecommendation,
   IngredientDefinition,
   MealHistoryEntry,
+  SnackReaction,
 } from "./domain";
 import { completedCalendarMonths, localDateId } from "./calendar-date";
 import { ingredientById } from "./ingredient-catalog";
@@ -152,6 +153,19 @@ function checkedSnackFoods(value: unknown, snackCount: number): string[][] {
   return value.map((foods: string[]) => [...foods]);
 }
 
+const SNACK_REACTIONS: ReadonlySet<unknown> = new Set<SnackReaction>(["none", "taste_rejection", "texture_difficulty", "needs_review"]);
+
+/**
+ * A day's snack reactions as stored: one entry per snack, in snack order, no more entries than snacks, each a meal reaction
+ * value or null (not recorded). Anything else is refused rather than dropped, so a recorded reaction is never lost silently.
+ */
+function checkedSnackReactions(value: unknown, snackCount: number): Array<SnackReaction | null> {
+  if (!Array.isArray(value) || value.length > snackCount || !value.every((reaction) => reaction === null || SNACK_REACTIONS.has(reaction))) {
+    throw new Error("Routine snack reactions do not match the day's snacks.");
+  }
+  return [...value] as Array<SnackReaction | null>;
+}
+
 interface DailyRoutineLogRow {
   child_id: string;
   log_date: string;
@@ -159,6 +173,8 @@ interface DailyRoutineLogRow {
   snack_count: number | null;
   /** Missing until routine_snack_foods.sql is applied. */
   snack_foods?: unknown;
+  /** Missing until routine_snack_reactions.sql is applied. */
+  snack_reactions?: unknown;
   cup_practice: boolean | null;
   spoon_practice: boolean | null;
   finger_food: boolean | null;
@@ -179,6 +195,8 @@ function dailyRoutineLogFromRow(row: DailyRoutineLogRow): DailyRoutineLog {
     snackCount,
     // Until routine_snack_foods.sql is applied rows have no snack_foods: no snack foods were recorded.
     snackFoods: row.snack_foods === undefined ? [] : checkedSnackFoods(row.snack_foods, snackCount),
+    // Until routine_snack_reactions.sql is applied rows have no snack_reactions: no snack reaction was recorded.
+    snackReactions: row.snack_reactions === undefined ? [] : checkedSnackReactions(row.snack_reactions, snackCount),
     cupPractice: Boolean(row.cup_practice),
     spoonPractice: Boolean(row.spoon_practice),
     fingerFood: Boolean(row.finger_food),
@@ -203,6 +221,38 @@ export async function loadDailyRoutineLogs(childId: string): Promise<DailyRoutin
   return (data ?? []).map(dailyRoutineLogFromRow);
 }
 
+/** Rows read per request of a child's snack days; a server limit below it only means more requests. */
+export const SNACK_ROUTINE_PAGE_SIZE = 1000;
+
+/**
+ * Every day of a child's routine with snacks, however old (unlike `loadDailyRoutineLogs`), oldest first: what was tried at
+ * a snack and the snack reactions that hold new foods, for the child's whole history. It is read page by page after the
+ * last day read, until a page comes back empty, so a server row limit never cuts off the newest days. Safety follows from
+ * it, so every failed or unconfirmed read throws, a table reported missing included (unlike the latest rows' list).
+ */
+export async function loadSnackRoutineLogs(childId: string): Promise<DailyRoutineLog[]> {
+  const logs: DailyRoutineLog[] = [];
+  for (;;) {
+    let query = getSupabaseClient()
+      .from("daily_routine_logs")
+      .select("*")
+      .eq("child_id", childId)
+      .gt("snack_count", 0);
+    const last = logs.at(-1)?.date;
+    if (last) query = query.gt("log_date", last);
+    const { data, error } = await query.order("log_date", { ascending: true }).limit(SNACK_ROUTINE_PAGE_SIZE);
+    if (error) throw error;
+    // postgrest-js reports a reply without a body with no error and no rows: that is no read either.
+    if (!Array.isArray(data)) throw new Error("The child's snack days could not be read.");
+    if (!data.length) return logs;
+    const page = data.map(dailyRoutineLogFromRow);
+    if (page.some((log, index) => log.date <= (index ? page[index - 1].date : last ?? ""))) {
+      throw new Error("The child's snack days came back out of order.");
+    }
+    logs.push(...page);
+  }
+}
+
 /**
  * One day's routine, read on its own: it may be older than the rows `loadDailyRoutineLogs` returns. Null only when the
  * read returned no row for the day. Every failed read throws, a table reported missing included (unlike the list): a
@@ -221,9 +271,12 @@ export async function loadDailyRoutineLog(childId: string, date: string): Promis
 }
 
 export async function saveDailyRoutineLog(log: DailyRoutineLog): Promise<void> {
-  // Snacks after the last one with recorded foods are not stored as empty lists, so a day without snack foods stays [].
+  // Snacks after the last one with recorded foods are not stored as empty lists, so a day without snack foods stays [];
+  // reactions after the last recorded one are not stored as nulls either.
   const snackFoods = checkedSnackFoods(log.snackFoods, log.snackCount);
   while (snackFoods.length && !snackFoods[snackFoods.length - 1].length) snackFoods.pop();
+  const snackReactions = checkedSnackReactions(log.snackReactions, log.snackCount);
+  while (snackReactions.length && snackReactions[snackReactions.length - 1] === null) snackReactions.pop();
   const client = getSupabaseClient();
   const { data: authData, error: authError } = await client.auth.getUser();
   if (authError) throw authError;
@@ -232,9 +285,11 @@ export async function saveDailyRoutineLog(log: DailyRoutineLog): Promise<void> {
     log_date: log.date,
     milk_ml: log.milkMl,
     snack_count: log.snackCount,
-    // Always written, so foods taken off a day are cleared too. Until routine_snack_foods.sql is applied the column is
-    // missing and the save fails (PGRST204); it is never retried without the snack foods.
+    // Always written, so foods and reactions taken off a day are cleared too. Until routine_snack_foods.sql and
+    // routine_snack_reactions.sql are applied a column is missing and the save fails (PGRST204); it is never retried
+    // without them.
     snack_foods: snackFoods,
+    snack_reactions: snackReactions,
     cup_practice: log.cupPractice,
     spoon_practice: log.spoonPractice,
     finger_food: log.fingerFood,
@@ -245,15 +300,8 @@ export async function saveDailyRoutineLog(log: DailyRoutineLog): Promise<void> {
   if (error) throw error;
 }
 
-export async function saveChildIngredientState(
-  childId: string,
-  state: ChildIngredientState,
-): Promise<void> {
-  const client = getSupabaseClient();
-  const { data: authData, error: authError } = await client.auth.getUser();
-  if (authError) throw authError;
-
-  const { error } = await client.from("child_ingredients").upsert({
+function childIngredientRow(childId: string, state: ChildIngredientState, updatedBy: string | null, updatedAt: string) {
+  return {
     child_id: childId,
     ingredient_id: state.ingredientId,
     status: state.status,
@@ -263,10 +311,89 @@ export async function saveChildIngredientState(
     last_offered_at: state.lastOfferedAt,
     accepted_texture_mm: state.acceptedTextureMm ?? [],
     last_reaction: state.lastReaction,
-    updated_by: authData.user?.id ?? null,
-    updated_at: new Date().toISOString(),
-  }, { onConflict: "child_id,ingredient_id" });
+    updated_by: updatedBy,
+    updated_at: updatedAt,
+  };
+}
+
+export async function saveChildIngredientState(
+  childId: string,
+  state: ChildIngredientState,
+): Promise<void> {
+  const client = getSupabaseClient();
+  const { data: authData, error: authError } = await client.auth.getUser();
+  if (authError) throw authError;
+
+  const { error } = await client
+    .from("child_ingredients")
+    .upsert(childIngredientRow(childId, state, authData.user?.id ?? null, new Date().toISOString()), { onConflict: "child_id,ingredient_id" });
   if (error) throw error;
+}
+
+/** What became of an observation state sent to `saveObservationState` (see supabase/routine_snack_reactions.sql). */
+export type ObservationSaveResult =
+  /** Saved as worked out. */
+  | "saved"
+  /** The day was not counted, but the record's reaction still restricts the food (paused or needs a check). */
+  | "restricted"
+  /** The food's state is no longer the one read: another save changed it first. */
+  | "changed"
+  /** The counted meal or snack is no longer stored with the food. */
+  | "record_changed"
+  /** Another food is under observation. */
+  | "another_food"
+  /** This food or another one was already observed on that calendar day. */
+  | "day_observed"
+  /** A meal or snack reaction that holds new foods was recorded for that day. */
+  | "held";
+
+const OBSERVATION_SAVE_RESULTS = new Set<string>(["saved", "restricted", "changed", "record_changed", "another_food", "day_observed", "held"]);
+
+/** The record an observation state is saved for: a meal (its plan) or one of a day's snacks (its index, the first is 0). */
+export type ObservationRecord = { mealPlanId: string } | { snackIndex: number };
+
+/**
+ * Saves the state an observation worked out from `base`, the food's stored state as it was read (null: the food had none),
+ * through `public.save_observation_state`, which saves one observation of a child at a time and re-checks what the app
+ * read: the state is saved only while it is still stored as read, and a counted observation day (one that moves the food's
+ * offered dates or exposures) only for its stored `record`, while no other food is under observation or was observed that
+ * calendar day and no reaction that holds new foods was recorded for it. A refused day still saves a reaction's pause or
+ * check (`restricted`). Calendar days are read in this device's time zone, as the app reads them. Throws when the save
+ * failed or its reply does not say what became of it.
+ */
+export async function saveObservationState(
+  childId: string,
+  state: ChildIngredientState,
+  base: ChildIngredientState | null,
+  record: ObservationRecord | null,
+): Promise<ObservationSaveResult> {
+  if (base && (base.ingredientId !== state.ingredientId || !base.updatedAt)) {
+    throw new Error("An ingredient state can only be saved over the stored state it was worked out from.");
+  }
+  const { data, error } = await getSupabaseClient().rpc("save_observation_state", {
+    target_child_id: childId,
+    target_ingredient_id: state.ingredientId,
+    expected_updated_at: base?.updatedAt ?? null,
+    next_state: {
+      status: state.status,
+      test_day: state.testDay,
+      exposure_count: state.exposureCount,
+      first_offered_at: state.firstOfferedAt,
+      last_offered_at: state.lastOfferedAt,
+      accepted_texture_mm: state.acceptedTextureMm ?? [],
+      last_reaction: state.lastReaction,
+    },
+    // The device's IANA zone, so the database reads calendar days as the app does; without one no day can be counted.
+    calendar_time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone ?? null,
+    credited_meal_plan_id: record && "mealPlanId" in record ? record.mealPlanId : null,
+    credited_snack_index: record && "snackIndex" in record ? record.snackIndex : null,
+  });
+  if (error) throw error;
+  // A reply without a known result (no body among them) confirms nothing.
+  if (typeof data !== "string" || !OBSERVATION_SAVE_RESULTS.has(data)) {
+    throw new Error("The ingredient state save could not be confirmed.");
+  }
+  return data as ObservationSaveResult;
 }
 
 export async function sendFamilyLoginEmail(email: string, redirectTo: string): Promise<void> {
@@ -653,6 +780,7 @@ export async function loadRecommendationInputs(childId: string): Promise<{
       lastOfferedAt: row.last_offered_at,
       acceptedTextureMm: row.accepted_texture_mm ?? [],
       lastReaction: row.last_reaction,
+      updatedAt: row.updated_at ?? null,
     })),
     history: ((historyRows ?? []) as RecommendationHistoryRow[]).map((row) => ({
       servedAt: row.recorded_at,
@@ -752,7 +880,8 @@ function roleForIngredient(ingredient: Pick<IngredientDefinition, "category">): 
   return "ingredient";
 }
 
-export async function saveFamilyMealRecord(input: SaveFamilyMealInput): Promise<void> {
+/** Saves a meal record (its plan, foods and log) and returns the meal plan's id. */
+export async function saveFamilyMealRecord(input: SaveFamilyMealInput): Promise<string> {
   const client = getSupabaseClient();
   const { data: authData, error: authError } = await client.auth.getUser();
   if (authError) throw authError;
@@ -833,6 +962,7 @@ export async function saveFamilyMealRecord(input: SaveFamilyMealInput): Promise<
     await discardCreatedPlan();
     throw logError;
   }
+  return plan.id;
 }
 
 export async function updateFamilyMealRecord(

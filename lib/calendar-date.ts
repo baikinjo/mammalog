@@ -31,6 +31,21 @@ export function localDateId(date: Date): string {
   return format({ year: date.getFullYear(), month: date.getMonth() + 1, day: date.getDate() });
 }
 
+/**
+ * The local calendar date of `localDay` at 12:00, as an ISO timestamp. A record with a date but no time of its own (a snack)
+ * is stored at noon, far from either midnight, so only its calendar date is ever read from it.
+ */
+export function calendarNoon(localDay: string): string | null {
+  const parts = partsOf(localDay);
+  return parts ? new Date(parts.year, parts.month - 1, parts.day, 12).toISOString() : null;
+}
+
+/** The last instant of the local calendar date `localDay`, as an ISO timestamp: later than any record of that day. */
+export function calendarDayEnd(localDay: string): string | null {
+  const parts = partsOf(localDay);
+  return parts ? new Date(parts.year, parts.month - 1, parts.day, 23, 59, 59, 999).toISOString() : null;
+}
+
 /** `dateId` moved by whole calendar months; a day the target month lacks becomes its last day (08-31 + 6 → 02-28/29). */
 export function addCalendarMonths(dateId: string, months: number): string | null {
   const parts = partsOf(dateId);

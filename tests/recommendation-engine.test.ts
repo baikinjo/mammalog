@@ -20,11 +20,18 @@ import {
   newRecordFoodSelection,
   recordedMealSlot,
   resolveMealTimes,
+  snackFoodObservation,
+  snackReactionHolds,
+  startableIngredientIds,
+  familiarOn,
+  triedIngredientIds,
+  withSnackReactionHolds,
 } from "../lib/recommendation-engine";
 import type {
   BabyProfile,
   ChildIngredientState,
   DailyRecommendation,
+  DailyRoutineLog,
   IngredientDefinition,
   MealHistoryEntry,
   PlannedMeal,
@@ -60,7 +67,8 @@ function testing(ingredientId: string, testDay = 1): ChildIngredientState {
     status: "testing",
     testDay,
     exposureCount: testDay - 1,
-    lastOfferedAt: testDay > 1 ? "2026-07-30T10:00:00.000Z" : null,
+    // Observed before every day these tests plan: a day before a food's latest observed day is never added later.
+    lastOfferedAt: testDay > 1 ? "2026-01-02T10:00:00.000Z" : null,
   };
 }
 
@@ -1543,4 +1551,254 @@ test("the prestart preview is unchanged by the start window and never stands in 
   // The real prestart child is not in the window even on its planned start: the start is not confirmed.
   const real = createBookBasedDayPlan(prestart, ingredientCatalog, [], [], graceDay(18), []);
   assert.deepEqual([real.recordOnly, real.meals.every(isHeldMeal)], [false, true]);
+});
+
+const snackChild: BabyProfile = { ...baseProfile, mealsPerDay: 2, snacksPerDay: 1, weaningStartDate: "2026-11-01" };
+const snackDay = (date: number, hour = 8) => new Date(2026, 10, date, hour);
+const noonOf = (date: number) => new Date(2026, 10, date, 12).toISOString();
+const familiarFoods = ["rice", "beef", "cabbage"].map(passed);
+const stateOf = (states: ChildIngredientState[], ingredientId: string) => states.find((state) => state.ingredientId === ingredientId);
+const trialItems = (plan: DailyRecommendation) => plan.meals.map((meal) => meal.items.filter((item) => item.isNewExposure).map((item) => item.ingredient.id));
+
+test("a snack counts toward observation only for the day's observation food, as its one food not yet passed, with a recorded reaction", () => {
+  const plan = createBookBasedDayPlan(snackChild, ingredientCatalog, familiarFoods, [], snackDay(12), []);
+  assert.equal(plan.currentTrial?.id, "pumpkin", "the day's observation food");
+
+  // A snack whose reaction was not recorded counts nothing, whatever it held; its foods are still tried.
+  assert.deepEqual(
+    snackFoodObservation(plan, "2026-11-12", [{ ingredientIds: ["pumpkin"], reaction: null }], familiarFoods, 3),
+    { states: familiarFoods, trial: null, repeat: null, uncounted: [], changed: [] },
+  );
+
+  // With a familiar food beside it and its reaction recorded, the observation starts on the snack's day (at noon: a snack
+  // has no time of its own).
+  const started = snackFoodObservation(plan, "2026-11-12", [{ ingredientIds: ["rice", "pumpkin"], reaction: "none" }], familiarFoods, 3);
+  assert.deepEqual([started.trial, started.repeat, started.uncounted], [{ ingredientId: "pumpkin", snackIndex: 0, day: 1 }, null, []]);
+  const pumpkin = stateOf(started.states, "pumpkin");
+  assert.deepEqual(
+    [pumpkin?.status, pumpkin?.testDay, pumpkin?.exposureCount, pumpkin?.firstOfferedAt, pumpkin?.lastOfferedAt],
+    ["testing", 2, 1, noonOf(12), noonOf(12)],
+  );
+  assert.deepEqual(started.states.filter((state) => state.ingredientId !== "pumpkin"), familiarFoods, "only the observation food changes");
+
+  // Several foods not yet passed are never cleared or blamed, and a food that is not the day's observation never starts
+  // its own; the day's observation food in such a mix does not count either.
+  const mixed = snackFoodObservation(plan, "2026-11-12", [
+    { ingredientIds: ["pumpkin", "banana"], reaction: "needs_review" },
+    { ingredientIds: ["kiwi"], reaction: "none" },
+  ], familiarFoods, 3);
+  assert.deepEqual([mixed.states, mixed.trial, mixed.repeat, [...mixed.uncounted].sort()], [familiarFoods, null, null, ["banana", "kiwi", "pumpkin"]]);
+
+  // An adverse reaction at the observing snack is that day's outcome, as at the first meal; a taste rejection ends it.
+  const hard = stateOf(snackFoodObservation(plan, "2026-11-12", [{ ingredientIds: ["pumpkin"], reaction: "texture_difficulty" }], familiarFoods, 3).states, "pumpkin");
+  assert.deepEqual([hard?.status, hard?.testDay, hard?.exposureCount, hard?.lastOfferedAt], ["paused", 1, 1, noonOf(12)]);
+  const refused = stateOf(snackFoodObservation(plan, "2026-11-12", [{ ingredientIds: ["pumpkin"], reaction: "taste_rejection" }], familiarFoods, 3).states, "pumpkin");
+  assert.deepEqual([refused?.status, refused?.testDay], ["rejected", null]);
+
+  // The reported case: banana under observation, given alone at a snack, continues its observation and passes on its day.
+  const bananaDay2 = [...familiarFoods, { ...testing("banana", 3), lastOfferedAt: noonOf(11) }];
+  const bananaPlan = createBookBasedDayPlan(snackChild, ingredientCatalog, bananaDay2, [], snackDay(12), []);
+  assert.equal(bananaPlan.currentTrial?.id, "banana");
+  const banana = snackFoodObservation(bananaPlan, "2026-11-12", [{ ingredientIds: ["banana"], reaction: "none" }], bananaDay2, 3);
+  assert.deepEqual(banana.trial, { ingredientId: "banana", snackIndex: 0, day: 3 });
+  assert.deepEqual([stateOf(banana.states, "banana")?.status, stateOf(banana.states, "banana")?.lastOfferedAt], ["passed", noonOf(12)]);
+
+  // A family food under observation counts the same way.
+  const berry: IngredientDefinition = { ...ingredientById.get("blueberry")!, id: "custom-berry", name: "우리집 베리", introductionPriority: 1001 };
+  const berryStates = [...familiarFoods, testing(berry.id, 1)];
+  const berryPlan = createBookBasedDayPlan(snackChild, [...ingredientCatalog, berry], berryStates, [], snackDay(12), []);
+  assert.equal(berryPlan.currentTrial?.id, berry.id);
+  const berryResult = snackFoodObservation(berryPlan, "2026-11-12", [{ ingredientIds: [berry.id], reaction: "none" }], berryStates, 3);
+  assert.deepEqual([berryResult.trial?.ingredientId, stateOf(berryResult.states, berry.id)?.testDay], [berry.id, 2]);
+});
+
+test("an observation counts at most once a calendar day across meals and snacks, in either order, and never for an earlier day", () => {
+  const plan = createBookBasedDayPlan(snackChild, ingredientCatalog, familiarFoods, [], snackDay(12), []);
+  const started = snackFoodObservation(plan, "2026-11-12", [{ ingredientIds: ["pumpkin"], reaction: "none" }], familiarFoods, 3).states;
+
+  // More snacks that day, saving the day again, and a retry count nothing more; a repeat can only add a restriction.
+  const again = snackFoodObservation(plan, "2026-11-12", [{ ingredientIds: ["pumpkin"], reaction: "none" }, { ingredientIds: ["pumpkin"], reaction: "none" }], started, 3);
+  assert.deepEqual([again.states, again.trial, again.repeat], [started, null, { ingredientId: "pumpkin", snackIndex: 1 }]);
+  const flagged = snackFoodObservation(plan, "2026-11-12", [{ ingredientIds: ["pumpkin"], reaction: "none" }, { ingredientIds: ["pumpkin"], reaction: "needs_review" }], familiarFoods, 3);
+  assert.deepEqual(
+    [flagged.trial?.snackIndex, flagged.repeat?.snackIndex, stateOf(flagged.states, "pumpkin")?.status, stateOf(flagged.states, "pumpkin")?.exposureCount],
+    [0, 1, "suspectedReaction", 1],
+  );
+
+  // Snack first: that day's first meal no longer observes the food, and a meal record of the day only repeats it.
+  const afterSnack = createBookBasedDayPlan(snackChild, ingredientCatalog, started, [], snackDay(12, 9), []);
+  assert.deepEqual([afterSnack.currentTrial?.id, afterSnack.trialDay, trialItems(afterSnack)], ["pumpkin", 2, [[], []]]);
+  assert.equal(applyTrialOutcome(started, "pumpkin", "accepted", snackDay(12, 18).toISOString(), 3), started, "the same day never counts twice");
+  // The next day observes it again from its first meal.
+  const nextDay = createBookBasedDayPlan(snackChild, ingredientCatalog, started, [], snackDay(13), []);
+  assert.deepEqual([nextDay.trialDay, trialItems(nextDay)], [2, [["pumpkin"], []]]);
+
+  // Meal first: the snack that day is a repeat.
+  const afterMeal = applyTrialOutcome(familiarFoods, "pumpkin", "accepted", snackDay(12, 9).toISOString(), 3);
+  const snackAfterMeal = snackFoodObservation(plan, "2026-11-12", [{ ingredientIds: ["pumpkin"], reaction: "none" }], afterMeal, 3);
+  assert.deepEqual([snackAfterMeal.states, snackAfterMeal.trial], [afterMeal, null]);
+
+  // A day on which another food's observation was recorded observes no other food.
+  const otherObserved = applyTrialOutcome(familiarFoods, "apple", "tasteRejected", snackDay(12, 9).toISOString(), 3);
+  const otherPlan = createBookBasedDayPlan(snackChild, ingredientCatalog, otherObserved, [], snackDay(12, 10), []);
+  assert.deepEqual(trialItems(otherPlan), [[], []]);
+  const secondFood = snackFoodObservation({ currentTrial: ingredientById.get("pumpkin")! }, "2026-11-12", [{ ingredientIds: ["pumpkin"], reaction: "none" }], otherObserved, 3);
+  assert.deepEqual([secondFood.states, secondFood.trial], [otherObserved, null]);
+
+  // A reaction added later to an older snack never counts that day or moves the food's dates back; an adverse one only
+  // adds its restriction.
+  const observedLater = applyTrialOutcome(started, "pumpkin", "accepted", noonOf(14), 3);
+  const olderSnack = snackFoodObservation(plan, "2026-11-13", [{ ingredientIds: ["pumpkin"], reaction: "none" }], observedLater, 3);
+  assert.deepEqual([olderSnack.states, olderSnack.trial], [observedLater, null]);
+  const olderHard = stateOf(snackFoodObservation(plan, "2026-11-13", [{ ingredientIds: ["pumpkin"], reaction: "texture_difficulty" }], observedLater, 3).states, "pumpkin");
+  assert.deepEqual(
+    [olderHard?.status, olderHard?.testDay, olderHard?.exposureCount, olderHard?.firstOfferedAt, olderHard?.lastOfferedAt],
+    ["paused", 3, 2, noonOf(12), noonOf(14)],
+  );
+  assert.equal(applyTrialOutcome(observedLater, "pumpkin", "accepted", snackDay(13, 9).toISOString(), 3), observedLater, "a meal of an earlier day neither");
+  const pastPlan = createBookBasedDayPlan(snackChild, ingredientCatalog, observedLater, [], snackDay(13), []);
+  assert.deepEqual(trialItems(pastPlan), [[], []], "a day before the food's latest observed day is not offered as its observation");
+
+  // A reaction that holds new foods stops later snacks that day from counting.
+  const held = snackFoodObservation(plan, "2026-11-12", [
+    { ingredientIds: ["kiwi", "pear"], reaction: "needs_review" },
+    { ingredientIds: ["pumpkin"], reaction: "none" },
+  ], familiarFoods, 3);
+  assert.deepEqual([held.states, held.trial, held.repeat?.snackIndex, [...held.uncounted].sort()], [familiarFoods, null, 1, ["kiwi", "pear"]]);
+});
+
+test("a snack reaction that needs a check holds new foods like a meal's, and a snack never ends a hold", () => {
+  const logs: Array<{ date: string; snackReactions: DailyRoutineLog["snackReactions"] }> = [
+    { date: "2026-11-12", snackReactions: [null, "texture_difficulty", "needs_review"] },
+    { date: "2026-11-13", snackReactions: ["none", "taste_rejection"] },
+    { date: "2026-11-14", snackReactions: ["texture_difficulty"] },
+  ];
+  const holdAt = (date: number) => new Date(2026, 10, date, 23, 59, 59, 999).toISOString();
+  assert.deepEqual(snackReactionHolds(logs), [
+    { servedAt: holdAt(12), ingredientIds: [], completion: "none", mealType: "snack", reaction: "needsReview" },
+    { servedAt: holdAt(14), ingredientIds: [], completion: "none", mealType: "snack", reaction: "textureDifficulty" },
+  ]);
+  const meal = (date: number, hour: number, reaction: MealHistoryEntry["reaction"]): MealHistoryEntry => ({
+    servedAt: snackDay(date, hour).toISOString(), ingredientIds: ["rice", "beef"], completion: "half", mealType: "meal", reaction,
+  });
+  const history = withSnackReactionHolds([meal(12, 9, "none"), meal(12, 13, "none")], [logs[0]]);
+  assert.deepEqual(history.map((entry) => entry.mealType), ["meal", "meal", "snack"], "after that day's meals");
+
+  // That day: the rest of it is held even before the entry's time, after the meals recorded that day.
+  const sameDay = createBookBasedDayPlan(snackChild, ingredientCatalog, familiarFoods, history, snackDay(12, 10), [
+    { index: 1, ingredientIds: ["rice", "beef"], newExposureIngredientId: null, reaction: "none" },
+  ]);
+  assert.deepEqual([sameDay.currentTrial, sameDay.nextAdditions], [null, []]);
+  // The next day it holds until a meal records none.
+  assert.equal(createBookBasedDayPlan(snackChild, ingredientCatalog, familiarFoods, history, snackDay(13, 8), []).currentTrial, null);
+  const afterMeal = createBookBasedDayPlan(snackChild, ingredientCatalog, familiarFoods, [...history, meal(13, 9, "none")], snackDay(13, 11), [
+    { index: 1, ingredientIds: ["rice", "beef"], newExposureIngredientId: null, reaction: "none" },
+  ]);
+  assert.equal(afterMeal.currentTrial?.id, "pumpkin");
+
+  // A snack recorded with no reaction never ends a meal's hold.
+  const mealHold: MealHistoryEntry[] = [
+    meal(13, 9, "needsReview"),
+    { servedAt: holdAt(13), ingredientIds: ["banana"], completion: "half", mealType: "snack", reaction: "none" },
+  ];
+  assert.equal(chooseNextIngredient(snackChild, ingredientCatalog, familiarFoods, mealHold, snackDay(14)), null);
+});
+
+test("every food given at a meal or a snack is tried, whether or not its reaction or observation was recorded", () => {
+  const tried = triedIngredientIds(
+    [{ ingredientIds: ["rice", "custom-old-veg"] }, { ingredientIds: ["beef"] }],
+    [{ snackFoods: [["banana"], [], ["kiwi", "yogurt"]] }, { snackFoods: [["custom-berry"]] }, { snackFoods: [] }],
+  );
+  assert.deepEqual([...tried].sort(), ["banana", "beef", "custom-berry", "custom-old-veg", "kiwi", "rice", "yogurt"]);
+});
+
+test("an adverse snack reaction after a snack completed the observation still restricts that food, in one save and after reopening", () => {
+  // Banana on its third observation day: the last day it was observed was the day before.
+  const bananaDay3 = [...familiarFoods, passed("yogurt"), { ...testing("banana", 3), firstOfferedAt: noonOf(10), lastOfferedAt: noonOf(11) }];
+  const plan = createBookBasedDayPlan(snackChild, ingredientCatalog, bananaDay3, [], snackDay(12), []);
+  assert.equal(plan.currentTrial?.id, "banana");
+  for (const [reaction, status] of [["needs_review", "suspectedReaction"], ["texture_difficulty", "paused"]] as const) {
+    // One save: the first snack passes banana; a later banana snack (with a familiar food beside it) that day restricts it,
+    // without another observation day or count.
+    const sameSave = snackFoodObservation(plan, "2026-11-12", [
+      { ingredientIds: ["banana"], reaction: "none" },
+      { ingredientIds: ["yogurt", "banana"], reaction },
+    ], bananaDay3, 3);
+    const banana = stateOf(sameSave.states, "banana");
+    assert.deepEqual(
+      [sameSave.trial, sameSave.repeat, sameSave.changed, banana?.status, banana?.testDay, banana?.exposureCount, banana?.lastOfferedAt],
+      [{ ingredientId: "banana", snackIndex: 0, day: 3 }, { ingredientId: "banana", snackIndex: 1 }, ["banana"], status, null, 3, noonOf(12)],
+      reaction,
+    );
+
+    // Reopened after that save passed banana: the plan has moved on, yet the snack changed to the adverse reaction still
+    // restricts banana, keeping its days, count and dates.
+    const passedOn12 = snackFoodObservation(plan, "2026-11-12", [{ ingredientIds: ["banana"], reaction: "none" }], bananaDay3, 3).states;
+    assert.equal(stateOf(passedOn12, "banana")?.status, "passed");
+    const later = createBookBasedDayPlan(snackChild, ingredientCatalog, passedOn12, [], snackDay(12, 18), []);
+    assert.notEqual(later.currentTrial?.id, "banana");
+    const reopened = snackFoodObservation(later, "2026-11-12", [{ ingredientIds: ["banana"], reaction }], passedOn12, 3);
+    const restricted = stateOf(reopened.states, "banana");
+    assert.deepEqual(
+      [reopened.trial, reopened.changed, restricted?.status, restricted?.exposureCount, restricted?.firstOfferedAt, restricted?.lastOfferedAt],
+      [null, ["banana"], status, 3, noonOf(10), noonOf(12)],
+      `${reaction} after reopening`,
+    );
+  }
+  // Never a positive replay: an uneventful reaction after reopening, or a taste rejection, leaves the passed state as it is.
+  const passedOn12 = snackFoodObservation(plan, "2026-11-12", [{ ingredientIds: ["banana"], reaction: "none" }], bananaDay3, 3).states;
+  for (const reaction of ["none", "taste_rejection"] as const) {
+    const unchanged = snackFoodObservation(plan, "2026-11-12", [{ ingredientIds: ["banana"], reaction }], passedOn12, 3);
+    assert.deepEqual([unchanged.states, unchanged.changed], [passedOn12, []], reaction);
+  }
+  // A snack of banana with another food not familiar that day blames neither: both are left for the family to check.
+  const mixed = snackFoodObservation(plan, "2026-11-12", [{ ingredientIds: ["banana", "kiwi"], reaction: "needs_review" }], passedOn12, 3);
+  assert.deepEqual([mixed.states, [...mixed.uncounted].sort()], [passedOn12, ["banana", "kiwi"]]);
+  // Banana is familiar only from the day after it passed.
+  assert.deepEqual([familiarOn(stateOf(passedOn12, "banana"), "2026-11-12"), familiarOn(stateOf(passedOn12, "banana"), "2026-11-13")], [false, true]);
+});
+
+test("with no food under observation, a snack's one new food starts an observation even when the plan would introduce another next", () => {
+  const berry: IngredientDefinition = { ...ingredientById.get("blueberry")!, id: "custom-berry", name: "우리집 베리", introductionPriority: 1001 };
+  const definitions = [...ingredientCatalog, berry];
+  const plan = createBookBasedDayPlan(snackChild, definitions, familiarFoods, [], snackDay(12), []);
+  const startable = startableIngredientIds(snackChild, definitions, familiarFoods, [], snackDay(12));
+  assert.equal(plan.currentTrial?.id, "pumpkin", "the plan's next food");
+  assert.ok(["banana", "kiwi", berry.id].every((id) => startable.has(id)), "foods the plan could introduce now");
+  assert.ok(!startable.has("millet") && !startable.has("rice"), "neither a food of a later stage nor a familiar food");
+
+  // The reported banana, a fresh fruit and a family food each start with the snack's reaction, as the day's observation.
+  for (const food of ["banana", "kiwi", berry.id]) {
+    const started = snackFoodObservation(plan, "2026-11-12", [
+      { ingredientIds: ["rice", food], reaction: "none" },
+      { ingredientIds: [food], reaction: "none" },
+      { ingredientIds: ["pear"], reaction: "none" },
+    ], familiarFoods, 3, startable);
+    const state = stateOf(started.states, food);
+    assert.deepEqual(
+      [started.trial, started.repeat, started.uncounted, started.changed, state?.status, state?.testDay, state?.exposureCount, state?.firstOfferedAt],
+      [{ ingredientId: food, snackIndex: 0, day: 1 }, { ingredientId: food, snackIndex: 1 }, ["pear"], [food], "testing", 2, 1, noonOf(12)],
+      `${food}: counted once, and no second food starts while it is observed`,
+    );
+  }
+
+  // The rules for a new food still apply: a later stage's food, several new foods together, an earlier reaction that holds
+  // new foods that day, or another food's observation that day starts nothing.
+  const nothing = (snacks: Parameters<typeof snackFoodObservation>[2], states = familiarFoods, from = startable) => {
+    const result = snackFoodObservation(plan, "2026-11-12", snacks, states, 3, from);
+    return [result.states === states, result.trial, result.changed];
+  };
+  assert.deepEqual(nothing([{ ingredientIds: ["millet"], reaction: "none" }]), [true, null, []], "stage");
+  assert.deepEqual(nothing([{ ingredientIds: ["banana", "kiwi"], reaction: "none" }]), [true, null, []], "two new foods");
+  assert.deepEqual(nothing([{ ingredientIds: ["rice"], reaction: "needs_review" }, { ingredientIds: ["kiwi"], reaction: "none" }]), [true, null, []], "held");
+  const appleToday = applyTrialOutcome(familiarFoods, "apple", "tasteRejected", snackDay(12, 9).toISOString(), 3);
+  assert.deepEqual(nothing([{ ingredientIds: ["kiwi"], reaction: "none" }], appleToday, startableIngredientIds(snackChild, definitions, appleToday, [], snackDay(12))), [true, null, []], "another food observed that day");
+
+  // While a food is under observation, or when new foods are held, no snack food may start.
+  const pumpkinTesting = [...familiarFoods, testing("pumpkin", 2)];
+  assert.equal(startableIngredientIds(snackChild, definitions, pumpkinTesting, [], snackDay(12)).size, 0);
+  const heldBy = (reaction: MealHistoryEntry["reaction"]): MealHistoryEntry => ({ servedAt: snackDay(11, 9).toISOString(), ingredientIds: ["rice"], completion: "half", mealType: "meal", reaction });
+  assert.equal(startableIngredientIds(snackChild, definitions, familiarFoods, [heldBy("needsReview")], snackDay(12)).size, 0, "held by yesterday's reaction");
+  assert.equal(startableIngredientIds(snackChild, definitions, familiarFoods, [], snackDay(12), [{ reaction: "textureDifficulty" }]).size, 0, "held by a meal of that day");
+  assert.ok(startableIngredientIds(snackChild, definitions, familiarFoods, [heldBy("none")], snackDay(12)).has("banana"));
 });

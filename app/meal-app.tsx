@@ -45,6 +45,11 @@ import {
   newRecordFoodSelection,
   recordedMealSlot,
   resolveMealTimes,
+  snackFoodObservation,
+  startableIngredientIds,
+  familiarOn,
+  triedIngredientIds,
+  withSnackReactionHolds,
   type TrialOutcome,
 } from "../lib/recommendation-engine";
 import type {
@@ -64,6 +69,7 @@ import type {
   ProgressionProposal,
   ReadinessSignals,
   RecordedMeal,
+  SnackReaction,
   TemporaryCondition,
   WeaningStage,
 } from "../lib/domain";
@@ -83,6 +89,7 @@ import {
   loadDailyRoutineLogs,
   loadFamilyMealRecords,
   loadRecommendationInputs,
+  loadSnackRoutineLogs,
   MealFoodCorrectionError,
   removeFamilyMember,
   resetChildProgress,
@@ -93,6 +100,8 @@ import {
   saveDailyRecommendation,
   saveDailyRoutineLog,
   saveFamilyMealRecord,
+  saveObservationState,
+  type ObservationRecord,
   updateCustomIngredient,
   updateDailyRecommendationOutput,
   updateFamilyMealRecord,
@@ -160,11 +169,19 @@ type RoutineDraft = Omit<DailyRoutineLog, "childId" | "date" | "updatedBy" | "up
 const STALE_MEAL_CHOICE_NOTICE = "고른 메뉴가 새 기록이나 반응·설정 변경으로 지금은 맞지 않아 기본 추천으로 돌아왔어요.";
 const STALE_RECORD_NOTICE = "새 기록이나 반응·설정 변경으로 기록하려던 식사 내용이 바뀌었어요. 바뀐 추천을 확인한 뒤 다시 기록해주세요.";
 const DAY_SNAPSHOT_NOT_SAVED_NOTICE = "식사 기록은 저장했지만 이날 추천 내역은 저장하지 못했어요. 같은 식사를 다시 기록하지 않아도 돼요.";
+const MEAL_OBSERVATION_NOT_SAVED_NOTICE = "식사 기록은 저장했지만 재료 관찰 상태는 저장하지 못했어요. 같은 식사를 다시 기록하지 말고 재료 탭에서 상태를 확인해주세요.";
 const START_REQUIRED_NOTICE = "이유식 시작을 확정한 뒤 실제로 먹인 식사를 기록할 수 있어요. 준비 화면에서 시작을 설정해주세요.";
 const BEFORE_START_NOTICE = "확정한 이유식 시작일부터 이미 먹인 식사를 기록할 수 있어요.";
+// An initial-stage profile without a saved start date (older profiles): no date is covered until the family saves one.
+const START_DATE_REQUIRED_NOTICE = "우리 아이 탭의 ‘예상 시작’에서 이유식 시작일을 저장하면 식사를 기록할 수 있어요.";
 const RECORD_CHANGED_NOTICE = "다른 보호자가 이 기록의 재료를 먼저 고쳤어요. 기록을 다시 확인한 뒤 수정해주세요.";
 const UNKNOWN_FOOD_NOTICE = "가족 재료 목록에 없는 재료가 있어 저장하지 않았어요. 재료를 다시 골라주세요.";
 const ROUTINE_SNACK_FOODS_SQL_NOTICE = "Supabase에서 routine_snack_foods.sql을 한 번 실행해야 하루 흐름을 저장할 수 있어요.";
+const ROUTINE_SNACK_REACTIONS_SQL_NOTICE = "Supabase에서 routine_snack_reactions.sql을 한 번 실행해야 하루 흐름을 저장할 수 있어요.";
+// The day's snacks are saved, but what they count toward an observation is not (or could not be confirmed). Saving the same
+// snacks again does not work them out again, so the family checks the food's status instead.
+const SNACK_OBSERVATION_NOT_SAVED_NOTICE = "하루 흐름은 저장했지만 간식에 따른 재료 관찰 상태는 저장하지 못했어요. 재료 탭에서 상태가 실제와 맞는지 확인해주세요.";
+const OBSERVATION_RESTRICTED_NOTICE = "기록은 저장했고 반응도 재료 상태에 반영했지만, 관찰 일수로는 세지 않았어요. 재료 탭에서 상태를 확인해주세요.";
 const ROUTINE_LOAD_FAILED_NOTICE = "수유·간식·먹기 연습 기록을 불러오지 못했어요. 연결 상태를 확인하고 다시 시도해주세요.";
 const FOOD_CORRECTION_UNCERTAIN_NOTICE = "저장 중 문제가 생겨 이 기록의 재료가 바뀌었는지 확인하지 못했어요. 기록을 다시 열어 재료를 확인해주세요.";
 // Shown with a meal recorded as actually given, so it is never mistaken for a book recommendation.
@@ -404,14 +421,42 @@ function planDateFor(todayId: string) {
 }
 
 /**
- * Whether the family's confirmed start covers a date, so a meal already given that day can be recorded on a slot the plan
- * holds. A saved start date must be on or before that date at every stage; an older profile with no saved start date is
- * covered only past the initial stage. The prestart preview covers none.
+ * Whether the family's confirmed start covers a date, so a meal given that day can be recorded (also on a slot the plan
+ * holds) and a meal or snack that day can count toward an observation. A saved start date must be on or before that date at
+ * every stage; an older profile with no saved start date is covered only past the initial stage. The prestart preview
+ * covers none.
  */
 function startConfirmedOn(profile: BabyProfile, date: string): boolean {
   if (profile.stage === "prestart") return false;
   if (profile.weaningStartDate) return profile.weaningStartDate <= date;
   return profile.stage !== "initial";
+}
+
+/**
+ * Saves the one food whose observation state a record changed, worked out from `stored` (the states as just read), through
+ * the database's observation save for `record` (see `saveObservationState`): a state another guardian or record saved
+ * meanwhile is never overwritten, so an observation day is not counted twice and a stronger restriction stays, and a day
+ * is counted only while no other food is observed then and no reaction holds new foods. "saved" when there was nothing to
+ * save or it was saved; "restricted" when the day was not counted but the record's reaction still restricted the food;
+ * "unsaved" when nothing was saved or the save could not be confirmed.
+ */
+async function saveObservedState(
+  childId: string,
+  stored: ChildIngredientState[],
+  next: ChildIngredientState[],
+  ingredientId: string,
+  record: ObservationRecord | null,
+): Promise<"saved" | "restricted" | "unsaved"> {
+  const state = next.find((item) => item.ingredientId === ingredientId);
+  const base = stored.find((item) => item.ingredientId === ingredientId) ?? null;
+  if (!state || state === base) return "saved";
+  const result = await saveObservationState(childId, state, base, record).catch(() => null);
+  return result === "saved" || result === "restricted" ? result : "unsaved";
+}
+
+/** The reminder for foods whose reaction a record saved as a restriction without counting the observation day. */
+function restrictedObservationReminder(names: string): string {
+  return `${names}의 반응은 재료 상태에 반영했지만 관찰 일수로는 세지 않았어요. 다른 기록이 먼저 저장됐을 수 있으니 상태가 실제와 맞는지 확인해주세요.`;
 }
 
 function recordedMealsOn(records: FamilyMealRecord[], date: string): RecordedMeal[] {
@@ -1284,12 +1329,15 @@ function TodayMeal({
 function IngredientsView({
   ingredients,
   ingredientStates,
+  triedIds,
   plan,
   onSelect,
   onAdd,
 }: {
   ingredients: IngredientDefinition[];
   ingredientStates: ChildIngredientState[];
+  /** Every food the child was given at a recorded meal or snack (`triedIngredientIds`). */
+  triedIds: Set<string>;
   plan: DailyRecommendation;
   onSelect: (ingredient: IngredientDefinition) => void;
   onAdd: () => void;
@@ -1403,11 +1451,17 @@ function IngredientsView({
           {visibleIngredients.map((ingredient) => {
             const isCustom = ingredient.id.startsWith("custom-");
             const state = stateByIngredient.get(ingredient.id);
-            const status = state
+            const tried = triedIds.has(ingredient.id);
+            const statusLabel = state
               ? ingredientStatusLabels[state.status]
               : ingredient.id === plan.currentTrial?.id
                 ? "테스트 예정"
-                : "미도입";
+                : tried ? null : "미도입";
+            // A food given at any recorded meal or snack shows 먹어봄 beside a status that would read as never given, never
+            // in place of an observation or family status.
+            const status = [tried && (!state || state.status === "ready" || state.status === "locked") ? "먹어봄" : null, statusLabel]
+              .filter(Boolean)
+              .join(" · ");
             return (
               <button className="ingredient-row" type="button" key={ingredient.id} onClick={() => onSelect(ingredient)}>
                 <IngredientVisual ingredient={ingredient} />
@@ -1595,19 +1649,20 @@ function RecordsView({
           <div className="routine-stat-grid">
             <div><span>수유량</span><strong>{selectedRoutine.milkMl == null ? "미기록" : `${selectedRoutine.milkMl}ml`}</strong></div>
             <div><span>간식</span><strong>{selectedRoutine.snackCount}회</strong></div>
-            {selectedRoutine.snackFoods.some((foods) => foods.length > 0) && (
+            {selectedRoutine.snackFoods.some((foods) => foods.length > 0) || selectedRoutine.snackReactions.some(Boolean) ? (
               <div className="routine-snack-foods">
                 <span>간식으로 먹인 재료</span>
                 {Array.from({ length: selectedRoutine.snackCount }, (_, index) => {
                   const foods = selectedRoutine.snackFoods[index] ?? [];
+                  const reaction = selectedRoutine.snackReactions[index] ?? null;
                   return (
                     <strong key={index}>{index + 1}번째 간식: {foods.length
                       ? foods.map((id) => recordIngredients.find((ingredient) => ingredient.id === id)?.name ?? "알 수 없는 재료").join(" · ")
-                      : "재료 미기록"}</strong>
+                      : "재료 미기록"} · {reaction ? reactionLabels[reaction] : "반응 미기록"}</strong>
                   );
                 })}
               </div>
-            )}
+            ) : null}
             <div className="routine-skills"><span>먹기 연습</span><strong>{[
               selectedRoutine.fingerFood && "핑거푸드",
               selectedRoutine.spoonPractice && "숟가락",
@@ -2268,12 +2323,15 @@ function FamilySyncSection({ onWorkspaceChange }: { onWorkspaceChange: () => voi
 function IngredientSheet({
   ingredient,
   state,
+  tried,
   onSaveState,
   onEditCustom,
   onClose,
 }: {
   ingredient: IngredientDefinition;
   state?: ChildIngredientState;
+  /** Whether the child was given the food at a recorded meal or snack. */
+  tried: boolean;
   onSaveState: (status: ChildIngredientState["status"], testDay: number | null) => Promise<void>;
   onEditCustom?: () => void;
   onClose: () => void;
@@ -2314,7 +2372,11 @@ function IngredientSheet({
           <div><dt>도입 시기</dt><dd>만 {ingredient.minimumAgeMonths ?? 6}개월부터 · {stageLabels[ingredient.minimumStage]}{earlyStartNote}</dd></div>
           <div><dt>조리·안전</dt><dd>{preparation}</dd></div>
           {ingredient.frequencyCap7Days && <div><dt>빈도 제한</dt><dd>최근 7일 최대 {ingredient.frequencyCap7Days}회</dd></div>}
-          <div><dt>현재 상태</dt><dd>{state ? ingredientStatusLabels[state.status] : "미도입"}{state?.status === "testing" ? ` · ${state.testDay ?? 1}/3일` : ""}</dd></div>
+          <div><dt>현재 상태</dt><dd>{[
+            // Like the ingredient list: 먹어봄 beside a status that would read as never given, never in place of one.
+            tried && (!state || state.status === "ready" || state.status === "locked") ? "먹어봄" : null,
+            state ? ingredientStatusLabels[state.status] : tried ? null : "미도입",
+          ].filter(Boolean).join(" · ")}{state?.status === "testing" ? ` · ${state.testDay ?? 1}/3일` : ""}</dd></div>
           <div><dt>책 근거</dt><dd>{ingredient.sourcePages?.length ? ingredient.sourcePages.join(" · ") : "가족이 직접 추가한 재료"}</dd></div>
           <div><dt>기록 방법</dt><dd>섭취량, 단순 거부, 질감 어려움, 이상 반응을 각각 나누어 기록해요.</dd></div>
         </dl>
@@ -2916,6 +2978,11 @@ function RoutineLogSheet({
     { length: initialLog?.snackCount ?? 0 },
     (_, index) => [...(initialLog?.snackFoods[index] ?? [])],
   ));
+  // One reaction per snack, in snack order; null is a snack whose reaction is not recorded, which every snack starts as.
+  const [snackReactions, setSnackReactions] = useState(() => Array.from(
+    { length: initialLog?.snackCount ?? 0 },
+    (_, index): SnackReaction | null => initialLog?.snackReactions[index] ?? null,
+  ));
   const [fingerFood, setFingerFood] = useState(initialLog?.fingerFood ?? false);
   const [spoonPractice, setSpoonPractice] = useState(initialLog?.spoonPractice ?? false);
   const [cupPractice, setCupPractice] = useState(initialLog?.cupPractice ?? false);
@@ -2926,8 +2993,9 @@ function RoutineLogSheet({
   const snackCountOptions = initialLog && initialLog.snackCount > 3 ? [0, 1, 2, 3, initialLog.snackCount] : [0, 1, 2, 3];
   const changeSnackCount = (count: number) => {
     setSnackCount(count);
-    // Fewer snacks drop the foods of the snacks taken away; more snacks start with no foods.
+    // Fewer snacks drop the foods and reactions of the snacks taken away; more snacks start with neither.
     setSnackFoods((current) => Array.from({ length: count }, (_, index) => current[index] ?? []));
+    setSnackReactions((current) => Array.from({ length: count }, (_, index) => current[index] ?? null));
   };
   const addSnackFood = (snackIndex: number, id: string) => setSnackFoods((current) => current.map((foods, index) => (
     index === snackIndex && !foods.includes(id) ? [...foods, id] : foods
@@ -2945,6 +3013,7 @@ function RoutineLogSheet({
         milkMl: milkMl === "" ? null : Number(milkMl),
         snackCount,
         snackFoods,
+        snackReactions,
         fingerFood,
         spoonPractice,
         cupPractice,
@@ -2976,7 +3045,8 @@ function RoutineLogSheet({
           </fieldset>
           {snackCount > 0 && (
             <fieldset className="form-field">
-              <legend>간식으로 먹인 재료</legend>
+              <legend>간식으로 먹인 재료와 반응</legend>
+              <p className="actual-food-message">반응을 고른 간식만 새 재료 관찰에 반영하고, 고르지 않은 간식의 재료는 먹어본 재료로만 남아요.</p>
               {snackFoods.map((foods, snackIndex) => {
                 const snackLabel = `${snackIndex + 1}번째 간식`;
                 return (
@@ -3008,6 +3078,19 @@ function RoutineLogSheet({
                         );
                       })}
                     </select>
+                    <div className="reaction-options snack-reaction-options" role="radiogroup" aria-label={`${snackLabel} 반응`}>
+                      {([null, "none", "taste_rejection", "texture_difficulty", "needs_review"] as Array<SnackReaction | null>).map((value) => (
+                        <label key={value ?? "unrecorded"}>
+                          <input
+                            type="radio"
+                            name={`snack-reaction-${snackIndex}`}
+                            checked={(snackReactions[snackIndex] ?? null) === value}
+                            onChange={() => setSnackReactions((current) => current.map((reaction, index) => (index === snackIndex ? value : reaction)))}
+                          />
+                          <span>{value ? reactionLabels[value] : "반응 미기록"}</span>
+                        </label>
+                      ))}
+                    </div>
                   </div>
                 );
               })}
@@ -3240,6 +3323,9 @@ export function MealApp() {
   const [todayId, setTodayId] = useState(() => toDateId(new Date()));
   const [records, setRecords] = useState<FamilyMealRecord[]>([]);
   const [routineLogs, setRoutineLogs] = useState<DailyRoutineLog[]>([]);
+  // Every day of the child's routine with snacks, however old (`routineLogs` keeps only the latest): the foods tried at a
+  // snack and the snack reactions that hold new foods. A failed read keeps what the same child last read.
+  const [snackLogs, setSnackLogs] = useState<DailyRoutineLog[]>([]);
   const [routineTarget, setRoutineTarget] = useState<RoutineTarget | null>(null);
   // The routine sheet asked for whose day is still being read. Only it may open, and anything that moves on (a newer
   // request, another day, tab or sheet, or another account, family or child) clears it.
@@ -3290,19 +3376,27 @@ export function MealApp() {
   const selectedIngredientState = selectedIngredient
     ? ingredientStates.find((state) => state.ingredientId === selectedIngredient.id)
     : undefined;
+  // Snack days kept from a read for another child never count for this one.
+  const childSnackLogs = useMemo(
+    () => snackLogs.filter((log) => log.childId === currentChild?.id),
+    [currentChild, snackLogs],
+  );
+  // The history the plan, the review and new records follow: the meals and the snack reactions that hold new foods.
+  const planHistory = useMemo(() => withSnackReactionHolds(mealHistory, childSnackLogs), [childSnackLogs, mealHistory]);
+  const triedIds = useMemo(() => triedIngredientIds(records, childSnackLogs), [childSnackLogs, records]);
   const currentPlan = useMemo(
     () => createBookBasedDayPlan(
       recommendationProfile(displayProfile),
       allIngredients,
       ingredientStates,
-      mealHistory,
+      planHistory,
       planDateFor(todayId),
       recordedMealsOn(records, todayId),
       // The day checks follow the menu chosen for the next meal; a choice for another child or day never applies.
       mealChoice?.childId === displayProfile.id && mealChoice.date === todayId ? mealChoice : null,
       recordIngredients,
     ),
-    [allIngredients, displayProfile, ingredientStates, mealChoice, mealHistory, recordIngredients, records, todayId],
+    [allIngredients, displayProfile, ingredientStates, mealChoice, planHistory, recordIngredients, records, todayId],
   );
   // A chosen menu stays UI-local until it is recorded, and only for the same child, day and unrecorded meal.
   // If new records, reactions or settings remove it from the eligible options it is dropped with a notice.
@@ -3319,8 +3413,8 @@ export function MealApp() {
   }, [currentPlan, displayProfile.id, mealChoice, records, todayId]);
   const mealChoiceNotice = mealChoiceStatus.stale ? STALE_MEAL_CHOICE_NOTICE : null;
   const currentAdaptiveReview = useMemo(
-    () => createAdaptiveReview(recommendationProfile(displayProfile), mealHistory, routineLogs),
-    [displayProfile, mealHistory, routineLogs],
+    () => createAdaptiveReview(recommendationProfile(displayProfile), planHistory, routineLogs),
+    [displayProfile, planHistory, routineLogs],
   );
   // Only a child's latest routine rows are kept; with all of them kept (fewer than the limit) every other day has none.
   const currentChildId = currentChild?.id ?? null;
@@ -3413,6 +3507,7 @@ export function MealApp() {
         setArchivedCustomIngredients([]);
         setReviewReminder(null);
         setRoutineLogs([]);
+        setSnackLogs([]);
         setSettings({ start: "만 6개월", time: "10:00", style: "냉동 큐브 활용" });
         familyDataUserIdRef.current = null;
         setFamilyDataRefreshError(null);
@@ -3432,6 +3527,7 @@ export function MealApp() {
         setArchivedCustomIngredients([]);
         setReviewReminder(null);
         setRoutineLogs([]);
+        setSnackLogs([]);
         setSettings({ start: "만 6개월", time: "10:00", style: "냉동 큐브 활용" });
         familyDataUserIdRef.current = data.session.user.id;
       }
@@ -3455,15 +3551,17 @@ export function MealApp() {
         setArchivedCustomIngredients([]);
         setReviewReminder(null);
         setRoutineLogs([]);
+        setSnackLogs([]);
         setFamilyDataRefreshError(null);
         return;
       }
-      const [nextRecords, recommendationInputs, nextCustomIngredients, nextArchivedCustomIngredients, nextRoutineLogs] = await Promise.all([
+      const [nextRecords, recommendationInputs, nextCustomIngredients, nextArchivedCustomIngredients, nextRoutineLogs, nextSnackLogs] = await Promise.all([
         loadFamilyMealRecords(child.id),
         loadRecommendationInputs(child.id),
         loadCustomIngredients(householdId),
         loadArchivedCustomIngredients(householdId),
         loadDailyRoutineLogs(child.id).catch(() => null),
+        loadSnackRoutineLogs(child.id).catch(() => null),
       ]);
       if (!isLatestRequest()) return;
       // A routine sheet still being read opens only for the family and child it was asked for.
@@ -3479,12 +3577,13 @@ export function MealApp() {
       // A status prompt stays only while the family and child it was saved for are the ones shown.
       setReviewReminder((reminder) => (reminder?.householdId === householdId && reminder.childId === child.id ? reminder : null));
       if (nextRoutineLogs) setRoutineLogs(nextRoutineLogs);
+      if (nextSnackLogs) setSnackLogs(nextSnackLogs);
       setSettings({
         start: formatProfileStart(child),
         time: child.preferredMealTime,
         style: preparationStyleLabels[child.preparationStyle],
       });
-      setFamilyDataRefreshError(nextRoutineLogs ? null : ROUTINE_LOAD_FAILED_NOTICE);
+      setFamilyDataRefreshError(nextRoutineLogs && nextSnackLogs ? null : ROUTINE_LOAD_FAILED_NOTICE);
     } catch {
       if (!isLatestRequest()) return;
       setFamilyDataRefreshError("가족 기록을 불러오지 못했어요. 연결 상태를 확인하고 다시 시도해주세요.");
@@ -3609,6 +3708,9 @@ export function MealApp() {
       let daySnapshotSaved = true;
       let saveNotice: string | null = null;
       let reminder: Pick<ReviewReminder, "message" | "ingredientIds"> | null = null;
+      // A new meal's observation food whose state was not saved as worked out: another record changed it first, the day could
+      // not be counted (only the reaction's restriction was saved), or the save could not be confirmed.
+      let unsavedObservation: { id: string; restricted: boolean } | null = null;
       if (target.mealPlanId) {
         if (!editingRecord || editingRecord.date !== target.date || editingRecord.mealIndex !== target.mealIndex) {
           rejectRecord("수정하려던 기록이 바뀌었어요. 기록을 다시 확인한 뒤 수정해주세요.");
@@ -3621,20 +3723,27 @@ export function MealApp() {
         }
         // A reaction is only pinned on the food the meal introduced, or on the one food under observation that a
         // single-food meal served again (the first rice days); a reaction on a meal with other foods is never pinned on it.
-        const applyEditedReaction = async (introducedIngredientId: string | null, ingredientIds: string[]) => {
+        // It is worked out from the states as stored now, and saved only while that food is still stored so: a meal or a
+        // snack another guardian saved meanwhile is never overwritten. False when the state was not saved.
+        const applyEditedReaction = async (introducedIngredientId: string | null, ingredientIds: string[]): Promise<boolean> => {
+          if (outcome === "accepted") return true;
+          const { states } = await loadRecommendationInputs(currentChild.id);
           const repeatedIngredientId = introducedIngredientId || ingredientIds.length !== 1
             ? null
             : ingredientIds.find((id) => {
-              const status = ingredientStates.find((state) => state.ingredientId === id)?.status;
+              const status = states.find((state) => state.ingredientId === id)?.status;
               return status === "testing" || status === "paused";
             }) ?? null;
           const nextStates = introducedIngredientId
-            ? applyEditedTrialOutcome(ingredientStates, introducedIngredientId, outcome, editingRecord.recordedAt, draft.note)
+            ? applyEditedTrialOutcome(states, introducedIngredientId, outcome, editingRecord.recordedAt, draft.note)
             : repeatedIngredientId
-              ? applyRepeatedTrialReaction(ingredientStates, repeatedIngredientId, outcome, draft.note)
-              : ingredientStates;
-          const nextState = nextStates.find((state) => state.ingredientId === (introducedIngredientId ?? repeatedIngredientId));
-          if (nextStates !== ingredientStates && nextState) await saveChildIngredientState(currentChild.id, nextState);
+              ? applyRepeatedTrialReaction(states, repeatedIngredientId, outcome, draft.note)
+              : states;
+          const changedId = introducedIngredientId ?? repeatedIngredientId;
+          // An edit only restricts a food. A food it gives a first state (a record older than the food's state) is saved
+          // for this meal, and keeps the restriction even when the meal's day cannot be counted.
+          return !changedId
+            || await saveObservedState(currentChild.id, states, nextStates, changedId, { mealPlanId: editingRecord.mealPlanId }) !== "unsaved";
         };
         if (!foodsChanged) {
           await updateFamilyMealRecord(editingRecord.mealPlanId, {
@@ -3642,7 +3751,9 @@ export function MealApp() {
             reaction: draft.reaction,
             note: draft.note,
           });
-          await applyEditedReaction(editingRecord.newExposureIngredientId, editingRecord.ingredientIds);
+          if (!await applyEditedReaction(editingRecord.newExposureIngredientId, editingRecord.ingredientIds).catch(() => false)) {
+            saveNotice = "기록은 수정했지만 반응에 따른 재료 상태는 저장하지 못했어요. 재료 탭에서 상태를 확인해주세요.";
+          }
         } else {
           // The record becomes a meal recorded as actually given. Ingredient states are not recalculated from a corrected
           // meal; the family is asked to check the foods it affects instead.
@@ -3689,7 +3800,7 @@ export function MealApp() {
           }).then(() => true, () => false);
           // Only a reaction changed in this edit can tighten an observation, as it would without the food correction.
           const stateSaved = !logSaved || draft.reaction === editingRecord.reaction
-            || await applyEditedReaction(introducedIngredientId, actualIds).then(() => true, () => false);
+            || await applyEditedReaction(introducedIngredientId, actualIds).catch(() => false);
           if (storedDay) {
             // The corrected meal holds every food it was recorded with, also one the family has since removed from its list.
             const corrected = recordedMealSlot({
@@ -3737,10 +3848,11 @@ export function MealApp() {
         }
         const shown = target.meal;
         const shownTextureMm = shown?.textureMm;
-        // A slot the plan holds only records a meal already given, and only on a date the family's confirmed start covers.
+        // A meal is recorded, and its observation counted, only on a date the family's confirmed start covers, on every
+        // slot; a slot the plan holds only records a meal already given.
         const heldSlot = Boolean(shown && isHeldMeal(shown));
-        if (heldSlot && !startConfirmedOn(currentChild, target.date)) {
-          rejectRecord(BEFORE_START_NOTICE);
+        if (!startConfirmedOn(currentChild, target.date)) {
+          rejectRecord(currentChild.weaningStartDate ? BEFORE_START_NOTICE : START_DATE_REQUIRED_NOTICE);
           return;
         }
         // Only a meal recorded without a recommendation comes with no suggested texture.
@@ -3748,17 +3860,26 @@ export function MealApp() {
           rejectRecord(STALE_RECORD_NOTICE);
           return;
         }
-        if (records.some((record) => record.date === target.date && record.mealIndex === target.mealIndex)) {
+        // What the meal records is worked out from the records, states and snack days as stored now, not as this screen last
+        // read them: a meal or a snack another guardian saved meanwhile is counted once and its reaction is kept.
+        const [stored, storedRecords, storedSnackLogs] = await Promise.all([
+          loadRecommendationInputs(currentChild.id),
+          loadFamilyMealRecords(currentChild.id),
+          loadSnackRoutineLogs(currentChild.id),
+        ]);
+        const states = stored.states;
+        const history = withSnackReactionHolds(stored.history, storedSnackLogs);
+        if (storedRecords.some((record) => record.date === target.date && record.mealIndex === target.mealIndex)) {
           rejectRecord("다른 보호자가 이미 이 식사를 기록했어요. 기록을 확인한 뒤 필요하면 수정해주세요.");
           return;
         }
         const planProfile = recommendationProfile(currentChild);
-        const recordedMeals = recordedMealsOn(records, target.date);
+        const recordedMeals = recordedMealsOn(storedRecords, target.date);
         const plan = createBookBasedDayPlan(
           planProfile,
           allIngredients,
-          ingredientStates,
-          mealHistory,
+          states,
+          history,
           planDateFor(target.date),
           recordedMeals,
           { mealIndex: target.mealIndex, optionId: shown.optionId },
@@ -3785,7 +3906,7 @@ export function MealApp() {
             && shown.items.some((item) => item.ingredient.id === plan.currentTrial?.id)
             ? plan.currentTrial
             : null;
-          await saveFamilyMealRecord({
+          const mealPlanId = await saveFamilyMealRecord({
             childId: currentChild.id,
             date: target.date,
             mealIndex: target.mealIndex,
@@ -3807,26 +3928,26 @@ export function MealApp() {
           });
           if (recordsTrial && plan.currentTrial) {
             const nextStates = applyTrialOutcome(
-              ingredientStates,
+              states,
               plan.currentTrial.id,
               outcome,
               mealTimestamp(target.date, shown.time),
               getStageGuide(plan.stage).newFoodIntervalDays[1],
               draft.note,
             );
-            const nextState = nextStates.find((state) => state.ingredientId === plan.currentTrial?.id);
-            if (nextState) await saveChildIngredientState(currentChild.id, nextState);
+            const result = await saveObservedState(currentChild.id, states, nextStates, plan.currentTrial.id, { mealPlanId });
+            if (result !== "saved") unsavedObservation = { id: plan.currentTrial.id, restricted: result === "restricted" };
           } else if (repeatedTrial) {
-            const nextStates = applyRepeatedTrialReaction(ingredientStates, repeatedTrial.id, outcome, draft.note);
-            const nextState = nextStates.find((state) => state.ingredientId === repeatedTrial.id);
-            if (nextStates !== ingredientStates && nextState) await saveChildIngredientState(currentChild.id, nextState);
+            const nextStates = applyRepeatedTrialReaction(states, repeatedTrial.id, outcome, draft.note);
+            const result = await saveObservedState(currentChild.id, states, nextStates, repeatedTrial.id, { mealPlanId });
+            if (result !== "saved") unsavedObservation = { id: repeatedTrial.id, restricted: result === "restricted" };
           }
           // The meal and its trial state are already saved, so a failed snapshot write ends in a warning and the sheet
           // closes instead of inviting the family to record the same meal again.
           daySnapshotSaved = await saveDailyRecommendation(currentChild.id, daySnapshot(plan, shown, storedDay), {
             profile: planProfile,
-            ingredientStates,
-            recentHistory: mealHistory.slice(-21),
+            ingredientStates: states,
+            recentHistory: history.slice(-21),
             recordedMeals,
           }).then(() => true, () => false);
         } else {
@@ -3837,9 +3958,9 @@ export function MealApp() {
             ? {
                 trial: null,
                 repeat: null,
-                uncounted: actualIds.filter((id) => ingredientStates.find((state) => state.ingredientId === id)?.status !== "passed"),
+                uncounted: actualIds.filter((id) => states.find((state) => state.ingredientId === id)?.status !== "passed"),
               }
-            : actualFoodObservation(plan, shown, actualIds, ingredientStates);
+            : actualFoodObservation(plan, shown, actualIds, states);
           const observed = plan.currentTrial;
           const shownTrial = shown.items.find((item) => item.isNewExposure)?.ingredient ?? null;
           const title = foodNames(actualIds);
@@ -3879,7 +4000,7 @@ export function MealApp() {
             servingMode: "",
             reasons,
           };
-          await saveFamilyMealRecord({
+          const mealPlanId = await saveFamilyMealRecord({
             childId: currentChild.id,
             date: target.date,
             mealIndex: target.mealIndex,
@@ -3904,27 +4025,27 @@ export function MealApp() {
           });
           if (observation.trial) {
             const nextStates = applyTrialOutcome(
-              ingredientStates,
+              states,
               observation.trial,
               outcome,
               mealTimestamp(target.date, shown.time),
               getStageGuide(plan.stage).newFoodIntervalDays[1],
               draft.note,
             );
-            const nextState = nextStates.find((state) => state.ingredientId === observation.trial);
-            if (nextState) await saveChildIngredientState(currentChild.id, nextState);
+            const result = await saveObservedState(currentChild.id, states, nextStates, observation.trial, { mealPlanId });
+            if (result !== "saved") unsavedObservation = { id: observation.trial, restricted: result === "restricted" };
           } else if (observation.repeat) {
-            const nextStates = applyRepeatedTrialReaction(ingredientStates, observation.repeat, outcome, draft.note);
-            const nextState = nextStates.find((state) => state.ingredientId === observation.repeat);
-            if (nextStates !== ingredientStates && nextState) await saveChildIngredientState(currentChild.id, nextState);
+            const nextStates = applyRepeatedTrialReaction(states, observation.repeat, outcome, draft.note);
+            const result = await saveObservedState(currentChild.id, states, nextStates, observation.repeat, { mealPlanId });
+            if (result !== "saved") unsavedObservation = { id: observation.repeat, restricted: result === "restricted" };
           }
           // The day snapshot holds the actual meal in its slot, with the meal shown and its options (or the hold) kept beside
           // it as the recommendation that was not followed; the day's checks count the actual meal.
           const actualDay = createBookBasedDayPlan(
             planProfile,
             allIngredients,
-            ingredientStates,
-            mealHistory,
+            states,
+            history,
             planDateFor(target.date),
             [...recordedMeals, actualMeal],
             null,
@@ -3939,8 +4060,8 @@ export function MealApp() {
             storedDay,
           ), {
             profile: planProfile,
-            ingredientStates,
-            recentHistory: mealHistory.slice(-21),
+            ingredientStates: states,
+            recentHistory: history.slice(-21),
             recordedMeals,
           }).then(() => true, () => false);
           if (observation.uncounted.length) {
@@ -3952,6 +4073,18 @@ export function MealApp() {
           saveNotice = !daySnapshotSaved
             ? DAY_SNAPSHOT_NOT_SAVED_NOTICE
             : heldSlot ? "이미 먹인 식사를 기록했어요. 쉬어가는 안내는 그대로예요." : "실제로 먹인 재료로 기록을 저장했어요.";
+        }
+        // The meal is saved, so it is not recorded again; the family checks the food whose state it could not change, or
+        // whose reaction it saved without counting the day.
+        if (unsavedObservation) {
+          const names = foodNames([unsavedObservation.id]);
+          saveNotice = unsavedObservation.restricted ? OBSERVATION_RESTRICTED_NOTICE : MEAL_OBSERVATION_NOT_SAVED_NOTICE;
+          reminder = {
+            message: unsavedObservation.restricted
+              ? restrictedObservationReminder(names)
+              : `${names}의 관찰 상태는 이 식사로 바꾸지 못했어요. 다른 기록이 먼저 저장됐을 수 있으니 상태가 실제와 맞는지 확인해주세요.`,
+            ingredientIds: [unsavedObservation.id],
+          };
         }
       }
       await refreshFamilyData();
@@ -4003,20 +4136,125 @@ export function MealApp() {
     }
     try {
       await saveDailyRoutineLog({ ...draft, childId: target.childId, date: target.date });
-      await refreshFamilyData();
-      setRoutineTarget(null);
-      showToast("하루 흐름을 가족 기록에 저장했어요.");
     } catch (error) {
       // Supabase returns a request's error as a plain object, not an Error.
       const message = error instanceof Error ? error.message : (error as { message?: string } | null)?.message ?? String(error);
-      // Until routine_snack_foods.sql runs the database has no snack food column, and nothing was saved.
-      const snackFoodsColumnMissing = (error as { code?: unknown } | null)?.code === "PGRST204" && /snack_foods/.test(message);
-      showToast(snackFoodsColumnMissing
+      // Until routine_snack_foods.sql and routine_snack_reactions.sql run the database lacks a snack column, and nothing
+      // was saved.
+      const columnMissing = (error as { code?: unknown } | null)?.code === "PGRST204";
+      showToast(columnMissing && /snack_foods/.test(message)
         ? ROUTINE_SNACK_FOODS_SQL_NOTICE
-        : /daily_routine_logs|schema cache|does not exist/i.test(message)
-          ? "Supabase에서 통합 기록 SQL을 한 번 실행해야 해요."
-          : "하루 흐름을 저장하지 못했어요. 잠시 후 다시 시도해주세요.");
+        : columnMissing && /snack_reactions/.test(message)
+          ? ROUTINE_SNACK_REACTIONS_SQL_NOTICE
+          : /daily_routine_logs|schema cache|does not exist/i.test(message)
+            ? "Supabase에서 통합 기록 SQL을 한 번 실행해야 해요."
+            : "하루 흐름을 저장하지 못했어요. 잠시 후 다시 시도해주세요.");
+      return;
     }
+    // The day's facts are saved. What its snacks count toward an observation is worked out from the states, meals and snack
+    // days as stored now, like a meal recorded with the foods actually given, and saved only while that food's state is still
+    // stored as read, so another guardian's save is never counted twice or overwritten. Only a snack whose reaction is
+    // recorded and that is new or changed in this save is worked out: one saved before as it is now was worked out then, and
+    // an unrelated edit never replays it.
+    let notice = "하루 흐름을 가족 기록에 저장했어요.";
+    let reminder: Pick<ReviewReminder, "message" | "ingredientIds"> | null = null;
+    const foodById = new Map(recordIngredients.map((ingredient) => [ingredient.id, ingredient]));
+    const foodNames = (ids: string[]) => ids.map((id) => foodById.get(id)?.name ?? "알 수 없는 재료").join("·");
+    const initialLog = target.initialLog;
+    const snacks = draft.snackFoods.map((ingredientIds, index) => {
+      const reaction = draft.snackReactions[index] ?? null;
+      const unchanged = Boolean(initialLog && index < initialLog.snackCount)
+        && (initialLog?.snackReactions[index] ?? null) === reaction
+        && foodSetKey(initialLog?.snackFoods[index] ?? []) === foodSetKey(ingredientIds);
+      return { ingredientIds, reaction, unchanged };
+    });
+    // A snack that had a reaction before and was changed or taken away keeps the observation state it already counted; the
+    // family checks its foods instead.
+    const changedFoodIds = (initialLog?.snackReactions ?? []).flatMap((reaction, index) => {
+      const before = initialLog?.snackFoods[index] ?? [];
+      const after = snacks[index];
+      return reaction && (!after || !after.unchanged) ? [...before, ...(after?.ingredientIds ?? [])] : [];
+    });
+    if (snacks.some((snack) => snack.reaction && !snack.unchanged) || changedFoodIds.length) {
+      try {
+        const [stored, storedRecords, storedSnackLogs] = await Promise.all([
+          loadRecommendationInputs(currentChild.id),
+          loadFamilyMealRecords(currentChild.id),
+          loadSnackRoutineLogs(currentChild.id),
+        ]);
+        const states = stored.states;
+        // A food familiar that day (passed before it) never takes a snack's reaction; one observed that day, also one passed
+        // that day, stays for the family to check.
+        const notFamiliar = (id: string) => !familiarOn(states.find((state) => state.ingredientId === id), target.date);
+        const planProfile = recommendationProfile(currentChild);
+        // The day's own snacks are worked out in their order below, so only other days' snack reactions hold its foods.
+        const history = withSnackReactionHolds(stored.history, storedSnackLogs.filter((log) => log.date !== target.date));
+        const planDate = planDateFor(target.date);
+        const recordedMeals = recordedMealsOn(storedRecords, target.date);
+        const plan = createBookBasedDayPlan(planProfile, allIngredients, states, history, planDate, recordedMeals, null, recordIngredients);
+        const requiredDays = getStageGuide(plan.stage).newFoodIntervalDays[1];
+        // An unchanged snack is passed without its foods, so it only holds the snacks after it.
+        const worked = snacks.map((snack) => ({ ingredientIds: snack.unchanged ? [] : snack.ingredientIds, reaction: snack.reaction }));
+        if (!startConfirmedOn(currentChild, target.date)) {
+          // No observation runs before the family's confirmed start, at any stage (as for a meal given on a held slot): the
+          // day's facts are saved, and no state is counted or changed.
+          notice = "하루 흐름을 저장했어요. 이유식 시작일을 확정하기 전이거나 그 전 날짜라 간식은 재료 관찰로 세지 않았어요.";
+        } else {
+          // A snack's one new food may start an observation of its own while no food is under observation.
+          const startable = startableIngredientIds(planProfile, allIngredients, states, history, planDate, recordedMeals, recordIngredients);
+          const observation = snackFoodObservation(plan, target.date, worked, states, requiredDays, startable);
+          // Written only under the account the day was saved for.
+          if (observation.changed.length && familyDataUserIdRef.current !== target.userId) throw new Error("The account changed during the save.");
+          const unsaved: string[] = [];
+          const restricted: string[] = [];
+          for (const id of observation.changed) {
+            // Only the food a snack counted is saved for that snack; any other change counts no day.
+            const record = observation.trial?.ingredientId === id ? { snackIndex: observation.trial.snackIndex } : null;
+            const result = await saveObservedState(currentChild.id, states, observation.states, id, record);
+            if (result === "unsaved") unsaved.push(id);
+            if (result === "restricted") restricted.push(id);
+          }
+          if (unsaved.length || restricted.length) {
+            notice = unsaved.length ? SNACK_OBSERVATION_NOT_SAVED_NOTICE : OBSERVATION_RESTRICTED_NOTICE;
+            reminder = {
+              message: [
+                ...(unsaved.length
+                  ? [`${foodNames(unsaved)}의 관찰 상태는 이 간식 기록으로 바꾸지 못했어요. 다른 기록이 먼저 저장됐을 수 있으니 상태를 확인해주세요.`]
+                  : []),
+                ...(restricted.length ? [restrictedObservationReminder(foodNames(restricted))] : []),
+              ].join(" "),
+              ingredientIds: [...unsaved, ...restricted],
+            };
+          } else {
+            if (observation.trial) {
+              const status = observation.states.find((state) => state.ingredientId === observation.trial?.ingredientId)?.status;
+              notice = `하루 흐름을 저장하고 간식으로 ${foodNames([observation.trial.ingredientId])} 관찰 ${observation.trial.day}/${requiredDays}일째를 반영했어요.`
+                + (status && status !== "testing" && status !== "passed" ? ` ‘${ingredientStatusLabels[status]}’ 상태가 됐어요.` : "");
+            } else if (observation.changed.length) {
+              notice = `하루 흐름을 저장하고 ${foodNames(observation.changed)}의 간식 반응을 재료 상태에 반영했어요. 관찰 일수는 늘지 않았어요.`;
+            }
+            const changedReview = changedFoodIds.filter(notFamiliar);
+            const reviewIds = [...new Set([...changedReview, ...observation.uncounted])];
+            if (reviewIds.length) {
+              reminder = {
+                message: changedReview.length
+                  ? `고친 간식의 재료 관찰 상태는 다시 계산하지 않았어요. ${foodNames(reviewIds)}의 상태가 실제와 맞는지 확인해주세요.`
+                  : `${foodNames(reviewIds)}은(는) 재료별 관찰로 세지 않았어요. 반응이나 진행 상태가 실제와 맞는지 재료 상태를 확인해주세요.`,
+                ingredientIds: reviewIds,
+              };
+            }
+          }
+        }
+      } catch {
+        notice = SNACK_OBSERVATION_NOT_SAVED_NOTICE;
+      }
+    }
+    await refreshFamilyData();
+    setRoutineTarget(null);
+    if (reminder && target.userId === familyDataUserIdRef.current) {
+      setReviewReminder({ ...reminder, userId: target.userId, householdId: target.householdId, childId: target.childId });
+    }
+    showToast(notice);
   };
 
   const addIngredient = async (name: string, category: IngredientCategory, assetId: string) => {
@@ -4082,8 +4320,11 @@ export function MealApp() {
       await saveChildIngredientState(currentChild.id, nextState);
       await refreshFamilyData();
       showToast(`${ingredient.name} 상태를 ${ingredientStatusLabels[status]}으로 저장했어요.`);
-    } catch {
-      showToast("재료 상태를 저장하지 못했어요. 잠시 후 다시 시도해주세요.");
+    } catch (error) {
+      // The database keeps one food under observation per child (routine_snack_reactions.sql).
+      showToast((error as { code?: unknown } | null)?.code === "23505"
+        ? "다른 재료를 이미 도입 중이라 저장하지 않았어요. 도입 중인 재료의 상태를 먼저 바꿔주세요."
+        : "재료 상태를 저장하지 못했어요. 잠시 후 다시 시도해주세요.");
     }
   };
 
@@ -4132,6 +4373,14 @@ export function MealApp() {
   const openRecordSheet = (
     target: Pick<RecordTarget, "date" | "mealIndex" | "meal" | "stage" | "mealPlanId"> & { ingredientIds?: string[] },
   ) => {
+    // A new record opens only on a date the family's confirmed start covers (saveRecord checks it again), so nothing is
+    // filled in that could not be saved; an existing record always opens to be edited.
+    if (!target.mealPlanId && currentChild && !startConfirmedOn(currentChild, target.date)) {
+      showToast(currentChild.stage === "prestart"
+        ? START_REQUIRED_NOTICE
+        : currentChild.weaningStartDate ? BEFORE_START_NOTICE : START_DATE_REQUIRED_NOTICE);
+      return;
+    }
     const ingredientIds = target.ingredientIds ?? target.meal?.items.map((item) => item.ingredient.id) ?? [];
     // A new record of a meal the plan offers starts with the foods given the day before; an edit starts with the record's
     // foods and a held slot with none. Either way a save is compared with `ingredientIds`.
@@ -4175,11 +4424,16 @@ export function MealApp() {
       showToast(START_REQUIRED_NOTICE);
       return;
     }
+    // A meal is recorded only on a date the family's confirmed start covers.
+    if (!startConfirmedOn(currentChild, date)) {
+      showToast(currentChild.weaningStartDate ? BEFORE_START_NOTICE : START_DATE_REQUIRED_NOTICE);
+      return;
+    }
     const plan = createBookBasedDayPlan(
       recommendationProfile(currentChild),
       allIngredients,
       ingredientStates,
-      mealHistory,
+      planHistory,
       planDateFor(date),
       recordedMealsOn(records, date),
       null,
@@ -4191,10 +4445,6 @@ export function MealApp() {
     const nextMeal = plan.meals.find((meal) => !recordedMealIndexes.has(meal.index));
     if (!nextMeal) {
       showToast("이 날짜의 식사는 모두 기록되어 있어요.");
-      return;
-    }
-    if (isHeldMeal(nextMeal) && !startConfirmedOn(currentChild, date)) {
-      showToast("이번 끼니는 쉬어요. 오늘 탭에서 이유를 확인해주세요.");
       return;
     }
     // Adding today's next meal from the records tab keeps the menu chosen on the today tab.
@@ -4337,6 +4587,7 @@ export function MealApp() {
       setIngredientStates([]);
       setMealHistory([]);
       setRoutineLogs([]);
+      setSnackLogs([]);
       setMealChoice(null);
       setReviewReminder(null);
       setPreviewStarted(false);
@@ -4358,6 +4609,7 @@ export function MealApp() {
       setIngredientStates([]);
       setMealHistory([]);
       setRoutineLogs([]);
+      setSnackLogs([]);
       setCustomIngredients([]);
       setPreviewStarted(false);
       setActiveTab("today");
@@ -4422,7 +4674,7 @@ export function MealApp() {
               ingredients={allIngredients}
               recordIngredients={recordIngredients}
               ingredientStates={ingredientStates}
-              mealHistory={mealHistory}
+              mealHistory={planHistory}
               records={records}
               todayId={todayId}
               routineLogs={routineLogs}
@@ -4441,7 +4693,7 @@ export function MealApp() {
           )
         )}
         {activeTab === "ingredients" && (
-          <IngredientsView ingredients={allIngredients} ingredientStates={ingredientStates} plan={currentPlan} onSelect={setSelectedIngredient} onAdd={() => setAddIngredientOpen(true)} />
+          <IngredientsView ingredients={allIngredients} ingredientStates={ingredientStates} triedIds={triedIds} plan={currentPlan} onSelect={setSelectedIngredient} onAdd={() => setAddIngredientOpen(true)} />
         )}
         {activeTab === "records" && (
           <RecordsView
@@ -4530,6 +4782,7 @@ export function MealApp() {
         <IngredientSheet
           ingredient={selectedIngredient}
           state={selectedIngredientState}
+          tried={triedIds.has(selectedIngredient.id)}
           onSaveState={(status, testDay) => saveManualIngredientState(selectedIngredient, status, testDay)}
           onEditCustom={selectedIngredient.id.startsWith("custom-")
             ? () => { setEditingCustomIngredient(selectedIngredient); setSelectedIngredient(null); }

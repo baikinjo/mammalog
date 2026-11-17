@@ -168,9 +168,12 @@ export interface ChildIngredientState {
   testDay: number | null;
   exposureCount: number;
   firstOfferedAt?: string | null;
+  /** When the food was last observed; its calendar day is the latest day an observation of it was recorded. */
   lastOfferedAt: string | null;
   acceptedTextureMm?: number[];
   lastReaction?: string | null;
+  /** When the stored state was last written, as read; a state worked out from it is only saved while it is unchanged. */
+  updatedAt?: string | null;
 }
 
 export interface MealHistoryEntry {
@@ -265,6 +268,9 @@ export interface NextAddition {
   unlocks: BookMenuPreview[];
 }
 
+/** How a snack went, with the same values as a meal's reaction (`meal_logs.reaction`). */
+export type SnackReaction = "none" | "taste_rejection" | "texture_difficulty" | "needs_review";
+
 export interface DailyRoutineLog {
   childId: string;
   date: string;
@@ -273,9 +279,14 @@ export interface DailyRoutineLog {
   /**
    * The foods actually given at each snack, in snack order: `snackFoods[0]` holds the first snack's ingredient ids. It
    * never has more lists than `snackCount`; a snack with no list, or an empty one, is a snack whose foods were not
-   * recorded. These are records only: they never count as meals, new-food observations or reactions.
+   * recorded. Every food given counts as tried; only a snack with a recorded reaction can count toward an observation.
    */
   snackFoods: string[][];
+  /**
+   * Each snack's reaction, in snack order, never more entries than `snackCount`. A snack with no entry, or null, is a snack
+   * whose reaction was not recorded: it is never taken as given without a reaction.
+   */
+  snackReactions: Array<SnackReaction | null>;
   cupPractice: boolean;
   spoonPractice: boolean;
   fingerFood: boolean;

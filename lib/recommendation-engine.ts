@@ -3,7 +3,7 @@ import {
   conditionGuidance,
   getStageGuide,
 } from "./book-knowledge";
-import { addCalendarDays, addCalendarMonths, calendarDaysBetween } from "./calendar-date";
+import { addCalendarDays, addCalendarMonths, calendarDayEnd, calendarDaysBetween, calendarNoon } from "./calendar-date";
 import {
   menuInstruction,
   menusForStage,
@@ -14,6 +14,7 @@ import type {
   BookMenuPreview,
   ChildIngredientState,
   DailyRecommendation,
+  DailyRoutineLog,
   FoodGroup,
   IngredientDefinition,
   IntroductionGroup,
@@ -23,6 +24,7 @@ import type {
   NextAddition,
   PlannedMeal,
   RecordedMeal,
+  SnackReaction,
   TargetCheck,
   WeaningStage,
 } from "./domain";
@@ -261,11 +263,49 @@ function conditionScore(profile: BabyProfile, ingredient: IngredientDefinition):
 
 function isReviewHold(history: MealHistoryEntry[], today: Date): boolean {
   const latestReaction = history
+    // A snack has no time of its own: its reaction can hold new foods (it is entered at the end of its day) but a snack
+    // never ends a hold.
+    .filter((entry) => entry.mealType !== "snack" || isHoldReaction(entry.reaction))
     .filter((entry) => new Date(entry.servedAt).getTime() <= today.getTime())
     .slice()
     .sort((left, right) => new Date(left.servedAt).getTime() - new Date(right.servedAt).getTime())
     .at(-1)?.reaction;
-  return latestReaction === "needsReview" || latestReaction === "textureDifficulty";
+  return isHoldReaction(latestReaction);
+}
+
+/** A reaction that holds new and observed foods: one that needs a check, or a texture that was hard. */
+function isHoldReaction(reaction: MealHistoryEntry["reaction"]): boolean {
+  return reaction === "needsReview" || reaction === "textureDifficulty";
+}
+
+/**
+ * Whether a reaction recorded for `planDate` holds new and observed foods for the rest of that day: a meal's, even when
+ * that meal was saved ahead of its planned time and so is not yet the latest entry in the history, or a snack's, which
+ * holds the whole day since a snack has no time of its own.
+ */
+function sameDayHold(history: MealHistoryEntry[], planDate: string, recordedMeals: Array<Pick<RecordedMeal, "reaction">> = []): boolean {
+  return recordedMeals.some((meal) => isHoldReaction(meal.reaction))
+    || history.some((entry) => entry.mealType === "snack" && isHoldReaction(entry.reaction) && isoDate(new Date(entry.servedAt)) === planDate);
+}
+
+/** The calendar day a food was last observed on (its `lastOfferedAt`), or null when it never was. */
+function lastObservedDay(state: ChildIngredientState | undefined): string | null {
+  return state?.lastOfferedAt ? isoDate(new Date(state.lastOfferedAt)) : null;
+}
+
+/** Whether a food's observation, from the first to the last day it was observed, includes `date`. */
+function observedOn(state: ChildIngredientState | undefined, date: string): boolean {
+  const first = state?.firstOfferedAt ? isoDate(new Date(state.firstOfferedAt)) : null;
+  const last = lastObservedDay(state);
+  return Boolean(first && last && first <= date && date <= last);
+}
+
+/**
+ * Whether a food was already familiar on `date`: it had passed, and was last observed (if ever) before then. A food observed
+ * on `date` or later, one that passed that day included, is not.
+ */
+export function familiarOn(state: ChildIngredientState | undefined, date: string): boolean {
+  return state?.status === "passed" && (lastObservedDay(state) ?? "") < date;
 }
 
 function nextMissingIntroductionGroup(
@@ -346,6 +386,26 @@ export function chooseNextIngredient(
   return rankIntroductionCandidates(profile, definitions, states, history, today, recordDefinitions)[0] ?? null;
 }
 
+/**
+ * The foods a snack may start observing on `today` (with that day's `recordedMeals`) although the plan would introduce
+ * another next: every food the plan could introduce then under the same hard rules (stage, age with a qualifying early
+ * start, blocked or paused states, the weekly fish cap, temporary conditions). Empty while a food is under observation or
+ * new foods are held, by the latest reaction or by a reaction recorded that day.
+ */
+export function startableIngredientIds(
+  profile: BabyProfile,
+  definitions: IngredientDefinition[],
+  states: ChildIngredientState[],
+  history: MealHistoryEntry[],
+  today: Date,
+  recordedMeals: Array<Pick<RecordedMeal, "reaction">> = [],
+  recordDefinitions: IngredientDefinition[] = definitions,
+): Set<string> {
+  if (states.some((state) => state.status === "testing")) return new Set();
+  if (sameDayHold(history, isoDate(today), recordedMeals) || isReviewHold(history, today)) return new Set();
+  return new Set(rankIntroductionCandidates(profile, definitions, states, history, today, recordDefinitions).map((item) => item.id));
+}
+
 export type TrialOutcome =
   | "accepted"
   | "tasteRejected"
@@ -361,6 +421,12 @@ export function applyTrialOutcome(
   reactionNote?: string,
 ): ChildIngredientState[] {
   const existing = states.find((state) => state.ingredientId === ingredientId);
+  // An observation counts once a calendar day, and only on a day after the food's latest observed day (whichever record,
+  // meal or snack, came first): a record of that day or an earlier one is a repeat that can only add a restriction.
+  const observedDay = lastObservedDay(existing);
+  if (observedDay && isoDate(new Date(observedAt)) <= observedDay) {
+    return applyRepeatedTrialReaction(states, ingredientId, outcome, reactionNote);
+  }
   const currentDay = existing?.testDay ?? 1;
   const exposureCount = (existing?.exposureCount ?? 0) + 1;
   let status: ChildIngredientState["status"] = "testing";
@@ -539,6 +605,118 @@ export function newRecordFoodSelection(
     ingredientIds: copiedIds.length ? copiedIds : shownIngredientIds,
     previousDay: { date: previousDate, copiedIds, unavailableIds },
   };
+}
+
+const snackTrialOutcome: Record<SnackReaction, TrialOutcome> = {
+  none: "accepted",
+  taste_rejection: "tasteRejected",
+  texture_difficulty: "textureDifficulty",
+  needs_review: "suspectedReaction",
+};
+
+/**
+ * How a day's snacks count toward observation, worked out like a meal recorded with the foods actually given (see
+ * `actualFoodObservation`), in snack order. Only a snack whose reaction was recorded counts; its foods were tried either
+ * way. A snack's reaction concerns its foods that were not familiar on `date` (`familiarOn`): a snack with several such
+ * foods counts nothing and never pins its reaction on one of them (`uncounted`), and one with none changes no state.
+ *
+ * A snack's one such food is the day's observation (`trial`) when it is the day's observation food (`plan.currentTrial`),
+ * or when no food is under observation and it is a food the plan could introduce that day (`startable`), so a snack can
+ * start an observation of its own; and only while no earlier snack that day had a reaction that holds new foods, no other
+ * food's observation includes `date`, and the food was last observed before `date`. It is then the day's observation food
+ * for the snacks after it. Otherwise a food under observation (the day's observation food, one being observed or paused,
+ * or one whose observation includes `date`, also one this save or an earlier one passed that day) takes the reaction as a
+ * repeat that can only add a restriction (`repeat`: the last such snack), and any other food is given without counting.
+ * `changed` lists every food whose state changed; `day` is the observation day the counted snack recorded.
+ */
+export function snackFoodObservation(
+  plan: Pick<DailyRecommendation, "currentTrial">,
+  date: string,
+  snacks: Array<{ ingredientIds: string[]; reaction: SnackReaction | null }>,
+  states: ChildIngredientState[],
+  requiredDays: number,
+  startable: ReadonlySet<string> = new Set(),
+): {
+  states: ChildIngredientState[];
+  trial: { ingredientId: string; snackIndex: number; day: number } | null;
+  repeat: { ingredientId: string; snackIndex: number } | null;
+  uncounted: string[];
+  changed: string[];
+} {
+  let observed = plan.currentTrial?.id ?? null;
+  const observedAt = calendarNoon(date);
+  let current = states;
+  let hold = false;
+  let trial: { ingredientId: string; snackIndex: number; day: number } | null = null;
+  let repeat: { ingredientId: string; snackIndex: number } | null = null;
+  const uncounted = new Set<string>();
+  const stateOf = (id: string) => current.find((state) => state.ingredientId === id);
+  snacks.forEach((snack, snackIndex) => {
+    if (!snack.reaction) return;
+    const outcome = snackTrialOutcome[snack.reaction];
+    const concerned = [...new Set(snack.ingredientIds)].filter((id) => !familiarOn(stateOf(id), date));
+    if (concerned.length === 1 && observedAt) {
+      const food = concerned[0];
+      const existing = stateOf(food);
+      const observedDay = lastObservedDay(existing);
+      const starts = food !== observed && startable.has(food) && !current.some((state) => state.status === "testing");
+      const countable = (food === observed || starts)
+        && !hold
+        && !current.some((state) => state.ingredientId !== food && observedOn(state, date))
+        && (!observedDay || observedDay < date);
+      if (countable) {
+        trial = { ingredientId: food, snackIndex, day: existing?.testDay ?? 1 };
+        current = applyTrialOutcome(current, food, outcome, observedAt, requiredDays);
+        observed = food;
+      } else if (food === observed || existing?.status === "testing" || existing?.status === "paused" || observedOn(existing, date)) {
+        repeat = { ingredientId: food, snackIndex };
+        current = applyRepeatedTrialReaction(current, food, outcome);
+      } else {
+        uncounted.add(food);
+      }
+    } else {
+      concerned.forEach((id) => uncounted.add(id));
+    }
+    if (outcome === "textureDifficulty" || outcome === "suspectedReaction") hold = true;
+  });
+  const changed = current.filter((state) => !states.includes(state)).map((state) => state.ingredientId);
+  return { states: current, trial, repeat, uncounted: [...uncounted], changed };
+}
+
+/**
+ * The snack reactions that hold new foods, as history entries: one per day that had a snack reaction needing a check or a
+ * hard texture (a check wins over a texture). A snack has no recorded time, so the entry is at the end of its day, after
+ * that day's meals, and it carries no foods: it holds new and observed foods like a meal's reaction, but never counts
+ * toward food groups, recency, menus or fish.
+ */
+export function snackReactionHolds(logs: Array<Pick<DailyRoutineLog, "date" | "snackReactions">>): MealHistoryEntry[] {
+  return logs.flatMap((log) => {
+    const reaction = log.snackReactions.includes("needs_review")
+      ? "needsReview"
+      : log.snackReactions.includes("texture_difficulty") ? "textureDifficulty" : null;
+    const servedAt = calendarDayEnd(log.date);
+    return reaction && servedAt
+      ? [{ servedAt, ingredientIds: [], completion: "none" as const, mealType: "snack" as const, reaction }]
+      : [];
+  });
+}
+
+/** The meal history with the snack reactions that hold new foods (`snackReactionHolds`), in time order. */
+export function withSnackReactionHolds(
+  history: MealHistoryEntry[],
+  logs: Array<Pick<DailyRoutineLog, "date" | "snackReactions">>,
+): MealHistoryEntry[] {
+  const holds = snackReactionHolds(logs);
+  if (!holds.length) return history;
+  return [...history, ...holds].sort((left, right) => new Date(left.servedAt).getTime() - new Date(right.servedAt).getTime());
+}
+
+/** Every food the child was given, in any recorded meal or snack, whether or not its reaction or observation was recorded. */
+export function triedIngredientIds(
+  records: Array<{ ingredientIds: string[] }>,
+  snackLogs: Array<Pick<DailyRoutineLog, "snackFoods">>,
+): Set<string> {
+  return new Set([...records.flatMap((record) => record.ingredientIds), ...snackLogs.flatMap((log) => log.snackFoods.flat())]);
 }
 
 function allowedPassedIngredients(
@@ -1205,13 +1383,17 @@ export function createBookBasedDayPlan(
     today,
   );
   const recordedFish = recorded.filter((meal) => isFishMeal(meal.ingredients)).length;
-  // An adverse reaction recorded for this day holds new and observed foods for the rest of it, even when that meal
-  // was saved ahead of its planned time and so is not yet the latest entry in the history.
-  const sameDayReview = recorded.some((meal) => meal.reaction === "needsReview" || meal.reaction === "textureDifficulty");
+  const sameDayReview = sameDayHold(history, planDate, recordedMeals);
   const reviewHold = sameDayReview || isReviewHold(history, today);
 
-  const trialMealIndex = recordedIndexes.has(1) ? null : 1;
   let currentTrial = sameDayReview ? null : chooseNextIngredient(profile, definitions, states, history, today, recordDefinitions);
+  // One food's observation is recorded a day, whichever record came first: once a meal or a snack recorded one that day,
+  // the first meal no longer observes a food, and a day before the observed food's latest observed day is never added.
+  const observationRecordedToday = states.some((state) => lastObservedDay(state) === planDate);
+  const trialObservedDay = lastObservedDay(states.find((state) => state.ingredientId === currentTrial?.id));
+  const trialMealIndex = recordedIndexes.has(1) || observationRecordedToday || (trialObservedDay !== null && trialObservedDay > planDate)
+    ? null
+    : 1;
   if (trialMealIndex && currentTrial?.foodGroup === "fish" && priorFish + recordedFish >= WEEKLY_FISH_MEAL_CAP) {
     currentTrial = null;
   }
@@ -1307,9 +1489,11 @@ export function createBookBasedDayPlan(
   };
   const holdReason = (index: number): string => (reviewHold
     ? "확인이 필요한 반응이나 질감 어려움이 기록돼 새 재료와 관찰 중인 재료를 쉬어요. 지금 줄 수 있는 통과한 재료가 없어 이번 끼니에 줄 음식이 없어요. 아이 상태를 살피고 필요하면 소아청소년과와 상의해주세요."
-    : currentTrial && index !== trialMealIndex
-      ? `처음 먹이는 재료(${currentTrial.name})는 첫 끼에서만 관찰해요. 지금 줄 수 있는 통과한 재료가 없어 이번 끼니는 쉬어요.`
-      : "지금 줄 수 있는 재료가 없어 이번 끼니는 쉬어요. 재료 탭에서 막힌 재료의 상태를 확인해주세요.");
+    : currentTrial && !recordedIndexes.has(1) && observationRecordedToday
+      ? "오늘은 간식 기록으로 재료 관찰을 이미 반영해 끼니에서는 관찰하지 않아요. 지금 줄 수 있는 통과한 재료가 없어 이번 끼니는 쉬어요."
+      : currentTrial && index !== trialMealIndex
+        ? `처음 먹이는 재료(${currentTrial.name})는 첫 끼에서만 관찰해요. 지금 줄 수 있는 통과한 재료가 없어 이번 끼니는 쉬어요.`
+        : "지금 줄 수 있는 재료가 없어 이번 끼니는 쉬어요. 재료 탭에서 막힌 재료의 상태를 확인해주세요.");
   // Why a record-only day carries no book guidance: a corrected age (stored without a date), a start more than seven
   // days before the six-month birthday, or a birth date that is not a real calendar date.
   const ageDate = initialStartAgeDate(profile);

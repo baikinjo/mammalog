@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createAdaptiveReview } from "../lib/adaptive-review";
 import { ingredientCatalog } from "../lib/ingredient-catalog";
-import { createBookBasedDayPlan, chooseNextIngredient } from "../lib/recommendation-engine";
+import { createBookBasedDayPlan, chooseNextIngredient, withSnackReactionHolds } from "../lib/recommendation-engine";
 import type { BabyProfile, ChildIngredientState, MealHistoryEntry } from "../lib/domain";
 
 const profile: BabyProfile = {
@@ -45,6 +45,15 @@ test("holds the new-food slot after a needs-review record", () => {
   const review = createAdaptiveReview(profile, history);
   assert.equal(review.progression.action, "review");
   assert.match(review.adjustments[0].detail, /이미 통과한 음식/);
+});
+
+test("a snack reaction that needs a check holds texture and new foods like a meal's", () => {
+  const history = withSnackReactionHolds(steady, [{ date: "2026-07-23", snackReactions: [null, "needs_review"] }]);
+  const review = createAdaptiveReview(profile, history);
+  assert.deepEqual([review.progression.action, review.adjustments[0].id], ["review", "reaction-review"]);
+  assert.equal(chooseNextIngredient(profile, ingredientCatalog, [], history, new Date("2026-07-24T12:00:00.000Z")), null);
+  // Snacks without such a reaction leave the review as it was.
+  assert.deepEqual(createAdaptiveReview(profile, withSnackReactionHolds(steady, [{ date: "2026-07-23", snackReactions: ["none", "taste_rejection"] }])), createAdaptiveReview(profile, steady));
 });
 
 test("adds preparation, serving and storage instructions to every planned meal", () => {
